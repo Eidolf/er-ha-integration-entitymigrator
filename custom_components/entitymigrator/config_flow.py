@@ -27,7 +27,12 @@ _LOGGER = logging.getLogger(__name__)
 
 def get_entities_with_statistics(hass: HomeAssistant) -> dict[str, bool]:
     """Retrieve entities having entries in statistics_meta, map statistic_id to has_sum."""
-    session = get_instance(hass).get_session()
+    try:
+        session = get_instance(hass).get_session()
+    except Exception as err:
+        _LOGGER.error("Failed to get recorder session: %s", err)
+        return {}
+
     try:
         result = session.execute(
             text("SELECT statistic_id, has_sum FROM statistics_meta")
@@ -222,17 +227,25 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         all_entities = set(self.hass.states.async_entity_ids())
         all_entities.update(old_entities_map.keys())
 
+        old_options = sorted(list(old_entities_map.keys()))
+        if not old_options:
+            old_options = ["Keine Entitäten mit Statistiken gefunden"]
+
+        new_options = sorted(list(all_entities))
+        if not new_options:
+            new_options = ["Keine Entitäten gefunden"]
+
         schema = vol.Schema(
             {
                 vol.Required(CONF_OLD_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=sorted(list(old_entities_map.keys())),
+                        options=old_options,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
                 vol.Required(CONF_NEW_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=sorted(list(all_entities)),
+                        options=new_options,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
