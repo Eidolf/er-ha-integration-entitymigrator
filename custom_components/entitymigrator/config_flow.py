@@ -11,6 +11,7 @@ from sqlalchemy import text
 from homeassistant import config_entries
 from homeassistant.components.recorder import get_instance
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 import homeassistant.util.dt as dt_util
 
@@ -178,7 +179,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    ) -> FlowResult:
         """Handle the initial step."""
         errors = {}
 
@@ -218,7 +219,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "db_error"
 
         # Combine active state entities with stats entities for selection lists
-        all_entities = set(self.hass.states.async_all_ids())
+        all_entities = set(self.hass.states.async_entity_ids())
         all_entities.update(old_entities_map.keys())
 
         schema = vol.Schema(
