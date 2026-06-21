@@ -1,6 +1,5 @@
 # Entity Statistics Migrator for Home Assistant
-
-![Logo](logo.png)
+<img src="logo.png" alt="Logo" width="200">
 
 This custom integration enables the migration of long-term statistics (LTS) from an old entity to a new entity directly inside Home Assistant using a graphical user interface (Config Flow).
 
