@@ -15,10 +15,10 @@ from homeassistant.helpers import selector
 import homeassistant.util.dt as dt_util
 
 from .const import (
-    CONF_ALTE_ENTITY_ID,
+    CONF_CUTOFF_DATE,
     CONF_DELETE_OLD,
-    CONF_NEUE_ENTITY_ID,
-    CONF_SCHNITTDATUM,
+    CONF_NEW_ENTITY_ID,
+    CONF_OLD_ENTITY_ID,
     DOMAIN,
 )
 
@@ -42,11 +42,11 @@ def run_db_migration(
     hass: HomeAssistant,
     old_entity: str,
     new_entity: str,
-    schnittdatum_str: str,
+    cutoff_date_str: str,
     delete_old: bool,
 ) -> None:
     """Run the database migration transaction in the executor thread."""
-    dt = dt_util.parse_datetime(schnittdatum_str)
+    dt = dt_util.parse_datetime(cutoff_date_str)
     if dt is None:
         raise ValueError("Invalid datetime format")
     dt = dt_util.as_utc(dt)
@@ -100,7 +100,7 @@ def run_db_migration(
 
         new_meta_id = new_meta[0]
 
-        # 4. Unique-Constraint-Bereinigung (Delete stats of the new entity before schnittdatum)
+        # 4. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
         session.execute(
             text(f"DELETE FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
             {"new_id": new_meta_id, "time_val": time_val}
@@ -112,13 +112,13 @@ def run_db_migration(
 
         # 5. Offset-Berechnung (for counters/sums)
         if has_sum:
-            # Last sum of old entity before schnittdatum
+            # Last sum of old entity before cutoff_date
             old_sum_row = session.execute(
                 text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id AND {time_col} < :time_val ORDER BY {time_col} DESC LIMIT 1"),
                 {"old_id": old_meta_id, "time_val": time_val}
             ).fetchone()
 
-            # First sum of new entity after schnittdatum
+            # First sum of new entity after cutoff_date
             new_sum_row = session.execute(
                 text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id AND {time_col} >= :time_val ORDER BY {time_col} ASC LIMIT 1"),
                 {"new_id": new_meta_id, "time_val": time_val}
@@ -191,9 +191,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors["base"] = "no_statistics"
 
         if user_input is not None:
-            old_entity = user_input[CONF_ALTE_ENTITY_ID]
-            new_entity = user_input[CONF_NEUE_ENTITY_ID]
-            schnittdatum = user_input[CONF_SCHNITTDATUM]
+            old_entity = user_input[CONF_OLD_ENTITY_ID]
+            new_entity = user_input[CONF_NEW_ENTITY_ID]
+            cutoff_date = user_input[CONF_CUTOFF_DATE]
             delete_old = user_input.get(CONF_DELETE_OLD, False)
 
             if old_entity == new_entity:
@@ -207,7 +207,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.hass,
                         old_entity,
                         new_entity,
-                        schnittdatum,
+                        cutoff_date,
                         delete_old,
                     )
                     return self.async_create_entry(
@@ -223,19 +223,19 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_ALTE_ENTITY_ID): selector.SelectSelector(
+                vol.Required(CONF_OLD_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=sorted(list(old_entities_map.keys())),
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Required(CONF_NEUE_ENTITY_ID): selector.SelectSelector(
+                vol.Required(CONF_NEW_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=sorted(list(all_entities)),
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Required(CONF_SCHNITTDATUM): selector.DateTimeSelector(),
+                vol.Required(CONF_CUTOFF_DATE): selector.DateTimeSelector(),
                 vol.Optional(CONF_DELETE_OLD, default=False): selector.BooleanSelector(),
             }
         )
