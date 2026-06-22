@@ -227,7 +227,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         all_entities = set(self.hass.states.async_entity_ids())
         all_entities.update(old_entities_map.keys())
 
-        old_options = sorted(list(old_entities_map.keys()))
+        old_options = sorted(list(all_entities))
         if not old_options:
             old_options = ["Keine Entitäten mit Statistiken gefunden"]
 
