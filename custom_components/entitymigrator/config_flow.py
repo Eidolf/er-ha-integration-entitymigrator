@@ -241,12 +241,14 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.SelectSelectorConfig(
                         options=old_options,
                         mode=selector.SelectSelectorMode.DROPDOWN,
+                        custom_value=True,
                     )
                 ),
                 vol.Required(CONF_NEW_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=new_options,
                         mode=selector.SelectSelectorMode.DROPDOWN,
+                        custom_value=True,
                     )
                 ),
                 vol.Required(CONF_CUTOFF_DATE): selector.DateTimeSelector(),

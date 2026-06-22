@@ -4,7 +4,7 @@
   "codeowners": ["@Eidolf"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://github.com/er-ha-integration-entitymigrator",
+  "documentation": "https://github.com/Eidolf/er-ha-integration-entitymigrator",
   "iot_class": "local_push",
-  "version": "1.0.3"
+  "version": "1.0.4"
 }
