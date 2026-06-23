@@ -176,7 +176,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Retrieve entities from statistics_meta using Home Assistant recorder API
         try:
-            stats = await list_statistic_ids(self.hass)
+            stats = await get_instance(self.hass).async_add_executor_job(
+                list_statistic_ids, self.hass
+            )
             old_entities_map = {
                 item["statistic_id"]: bool(item.get("has_sum"))
                 for item in stats
