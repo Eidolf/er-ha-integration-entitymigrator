@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from homeassistant import config_entries
 from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import list_statistic_ids
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
@@ -25,24 +26,6 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-def get_entities_with_statistics(hass: HomeAssistant) -> dict[str, bool]:
-    """Retrieve entities having entries in statistics_meta, map statistic_id to has_sum."""
-    try:
-        session = get_instance(hass).get_session()
-    except Exception as err:
-        _LOGGER.error("Failed to get recorder session: %s", err)
-        return {}
-
-    try:
-        result = session.execute(
-            text("SELECT statistic_id, has_sum FROM statistics_meta")
-        )
-        return {row[0]: bool(row[1]) for row in result if row[0]}
-    except Exception as err:
-        _LOGGER.error("Failed to query statistics_meta: %s", err)
-        return {}
-    finally:
-        session.close()
 
 def run_db_migration(
     hass: HomeAssistant,
@@ -188,10 +171,17 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         errors = {}
 
-        # Retrieve entities from statistics_meta
-        old_entities_map = await get_instance(self.hass).async_add_executor_job(
-            get_entities_with_statistics, self.hass
-        )
+        # Retrieve entities from statistics_meta using Home Assistant recorder API
+        try:
+            stats = await list_statistic_ids(self.hass)
+            old_entities_map = {
+                item["statistic_id"]: bool(item.get("has_sum"))
+                for item in stats
+                if "statistic_id" in item
+            }
+        except Exception as err:
+            _LOGGER.error("Failed to list statistic IDs: %s", err)
+            old_entities_map = {}
 
         if not old_entities_map:
             errors["base"] = "no_statistics"
