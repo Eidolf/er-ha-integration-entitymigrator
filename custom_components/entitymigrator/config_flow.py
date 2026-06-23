@@ -59,7 +59,9 @@ def run_db_migration(
         ).fetchone()
 
         if not old_meta:
-            raise NoStatistics(f"Old entity {old_entity} has no statistics metadata")
+            _LOGGER.warning("Old entity %s has no statistics metadata; skipping migration.", old_entity)
+            session.commit()
+            return
 
         old_meta_id, has_sum, source, unit, has_mean = old_meta
 
@@ -210,8 +212,6 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         title=f"Migration: {old_entity} -> {new_entity}",
                         data=user_input,
                     )
-                except NoStatistics:
-                    errors["base"] = "no_statistics"
                 except Exception:
                     errors["base"] = "db_error"
 
