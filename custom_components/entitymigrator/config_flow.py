@@ -189,7 +189,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         # Retrieve entities from statistics_meta
-        old_entities_map = await self.hass.async_add_executor_job(
+        old_entities_map = await get_instance(self.hass).async_add_executor_job(
             get_entities_with_statistics, self.hass
         )
 
@@ -208,7 +208,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "no_statistics"
             else:
                 try:
-                    await self.hass.async_add_executor_job(
+                    await get_instance(self.hass).async_add_executor_job(
                         run_db_migration,
                         self.hass,
                         old_entity,
