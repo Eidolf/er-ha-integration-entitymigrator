@@ -23,8 +23,11 @@ from .const import (
     CONF_OLD_ENTITY_ID,
     DOMAIN,
 )
-
 _LOGGER = logging.getLogger(__name__)
+
+class NoStatistics(Exception):
+    """Error to indicate that the old entity does not have statistics."""
+
 
 
 def run_db_migration(
@@ -56,7 +59,7 @@ def run_db_migration(
         ).fetchone()
 
         if not old_meta:
-            raise ValueError(f"Old entity {old_entity} has no statistics metadata")
+            raise NoStatistics(f"Old entity {old_entity} has no statistics metadata")
 
         old_meta_id, has_sum, source, unit, has_mean = old_meta
 
@@ -183,9 +186,6 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Failed to list statistic IDs: %s", err)
             old_entities_map = {}
 
-        if not old_entities_map:
-            errors["base"] = "no_statistics"
-
         if user_input is not None:
             old_entity = user_input[CONF_OLD_ENTITY_ID]
             new_entity = user_input[CONF_NEW_ENTITY_ID]
@@ -194,8 +194,6 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if old_entity == new_entity:
                 errors["base"] = "same_entity"
-            elif old_entity not in old_entities_map:
-                errors["base"] = "no_statistics"
             else:
                 try:
                     await get_instance(self.hass).async_add_executor_job(
@@ -210,6 +208,8 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         title=f"Migration: {old_entity} -> {new_entity}",
                         data=user_input,
                     )
+                except NoStatistics:
+                    errors["base"] = "no_statistics"
                 except Exception:
                     errors["base"] = "db_error"
 
