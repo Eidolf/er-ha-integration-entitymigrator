@@ -4,6 +4,10 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the Entity Statistics Migrator component."""
+    return True
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Entity Statistics Migrator from a config entry."""
     return True

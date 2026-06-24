@@ -215,6 +215,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         """Initialize flow."""
+        super().__init__()
         self.init_data: dict[str, Any] = {}
         self.migration_result: dict[str, Any] = {}
 
