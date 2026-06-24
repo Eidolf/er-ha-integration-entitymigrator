@@ -213,12 +213,6 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self) -> None:
-        """Initialize flow."""
-        super().__init__()
-        self.init_data: dict[str, Any] = {}
-        self.migration_result: dict[str, Any] = {}
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -257,8 +251,8 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         cutoff_date,
                         delete_old,
                     )
-                    self.init_data = user_input
-                    self.migration_result = summary
+                    self.context["init_data"] = user_input
+                    self.context["migration_result"] = summary
                     return await self.async_step_summary()
                 except Exception:
                     errors["base"] = "db_error"
@@ -305,14 +299,15 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle the summary step displaying the migration results."""
         if user_input is not None:
-            old_entity = self.init_data[CONF_OLD_ENTITY_ID]
-            new_entity = self.init_data[CONF_NEW_ENTITY_ID]
+            init_data = self.context.get("init_data", {})
+            old_entity = init_data.get(CONF_OLD_ENTITY_ID)
+            new_entity = init_data.get(CONF_NEW_ENTITY_ID)
             return self.async_create_entry(
                 title=f"Migration: {old_entity} -> {new_entity}",
-                data=self.init_data,
+                data=init_data,
             )
 
-        res = self.migration_result
+        res = self.context.get("migration_result", {})
         summary_text = (
             f"**Zusammenfassung der Migration:**\n\n"
             f"- **Status**: {res.get('status')}\n"
