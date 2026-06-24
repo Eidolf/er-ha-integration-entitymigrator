@@ -130,12 +130,27 @@ def run_db_migration(
                 if new_state:
                     new_unit = new_state.attributes.get("unit_of_measurement")
 
-            # Validate unit matching
+            # Validate unit matching and determine scaling factor
+            scale_factor = 1.0
             if old_unit and new_unit:
                 old_u_norm = old_unit.strip().lower()
                 new_u_norm = new_unit.strip().lower()
                 if old_u_norm != new_u_norm:
-                    raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
+                    # Check compatible conversions for Wh / kWh / MWh
+                    if old_u_norm == "kwh" and new_u_norm == "wh":
+                        scale_factor = 1000.0
+                    elif old_u_norm == "wh" and new_u_norm == "kwh":
+                        scale_factor = 0.001
+                    elif old_u_norm == "mwh" and new_u_norm == "wh":
+                        scale_factor = 1000000.0
+                    elif old_u_norm == "wh" and new_u_norm == "mwh":
+                        scale_factor = 0.000001
+                    elif old_u_norm == "mwh" and new_u_norm == "kwh":
+                        scale_factor = 1000.0
+                    elif old_u_norm == "kwh" and new_u_norm == "mwh":
+                        scale_factor = 0.001
+                    else:
+                        raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
 
             if not new_meta:
                 # Create metadata entry for new entity
@@ -210,7 +225,7 @@ def run_db_migration(
                             pass
 
                 if old_sum_row is not None and old_sum_row[0] is not None and new_sum_row is not None and new_sum_row[0] is not None:
-                    old_sum = old_sum_row[0] or 0.0
+                    old_sum = (old_sum_row[0] or 0.0) * scale_factor
                     new_sum = new_sum_row[0] or 0.0
                     offset = old_sum - new_sum
                     if offset != 0:
@@ -225,14 +240,42 @@ def run_db_migration(
                         session.commit()
 
             # 7. Perform the migration (UPDATE)
-            session.execute(
-                text(f"UPDATE statistics SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
-                {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
-            )
-            session.execute(
-                text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
-                {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
-            )
+            if scale_factor != 1.0:
+                session.execute(
+                    text(
+                        f"UPDATE statistics SET "
+                        f"metadata_id = :new_id, "
+                        f"sum = sum * :factor, "
+                        f"state = state * :factor, "
+                        f"min = min * :factor, "
+                        f"max = max * :factor, "
+                        f"mean = mean * :factor "
+                        f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
+                    ),
+                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
+                )
+                session.execute(
+                    text(
+                        f"UPDATE statistics_short_term SET "
+                        f"metadata_id = :new_id, "
+                        f"sum = sum * :factor, "
+                        f"state = state * :factor, "
+                        f"min = min * :factor, "
+                        f"max = max * :factor, "
+                        f"mean = mean * :factor "
+                        f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
+                    ),
+                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
+                )
+            else:
+                session.execute(
+                    text(f"UPDATE statistics SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
+                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
+                )
+                session.execute(
+                    text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
+                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
+                )
             session.commit()
 
             # 8. Cleanup old statistics if requested
