@@ -74,6 +74,9 @@ def run_db_migration(
 
             for attempt in range(max_attempts):
                 try:
+                    if session.bind.dialect.name == "sqlite":
+                        session.execute(text("BEGIN IMMEDIATE"))
+
                     # 2. Cleanup old states history if requested
                     if delete_old:
                         # Check if states table has metadata_id (modern HA versions) or entity_id (older HA versions)
@@ -105,7 +108,6 @@ def run_db_migration(
                             )
                             has_states_any = True
                         
-                        session.commit()
                         result_summary["deleted"] = "Ja"
 
                     # 3. Get old metadata
@@ -175,7 +177,6 @@ def run_db_migration(
                                 "has_sum": has_sum,
                             }
                         )
-                        session.commit()
                         new_meta = session.execute(
                             text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
                             {"new": new_entity}
@@ -192,7 +193,6 @@ def run_db_migration(
                         text(f"DELETE FROM statistics_short_term WHERE metadata_id = :new_id AND {time_col} < :time_val"),
                         {"new_id": new_meta_id, "time_val": time_val}
                     )
-                    session.commit()
 
                     # 6. Offset-Berechnung (for counters/sums)
                     if has_sum:
@@ -245,7 +245,6 @@ def run_db_migration(
                                     text(f"UPDATE statistics_short_term SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
                                     {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
                                 )
-                                session.commit()
 
                     # 7. Perform the migration (UPDATE)
                     if scale_factor != 1.0:
@@ -284,7 +283,6 @@ def run_db_migration(
                             text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
                             {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
                         )
-                    session.commit()
 
                     # 8. Cleanup old statistics if requested
                     if delete_old:
@@ -300,8 +298,8 @@ def run_db_migration(
                             text("DELETE FROM statistics_meta WHERE id = :old_id"),
                             {"old_id": old_meta_id}
                         )
-                        session.commit()
 
+                    session.commit()
                     result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
                     success = True
                     break
