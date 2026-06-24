@@ -374,9 +374,15 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["cutoff_date"],
                         self.context["delete_old"],
                     )
+                    device_registry = dr.async_get(self.hass)
+                    device_entry = device_registry.async_get(device_id)
+                    device_name = device_id
+                    if device_entry:
+                        device_name = device_entry.name_by_user or device_entry.name or device_id
+
                     self.context["init_data"] = {
                         CONF_OLD_ENTITY_ID: f"Device Migration ({len(mappings)} Entitäten)",
-                        CONF_NEW_ENTITY_ID: device_id,
+                        CONF_NEW_ENTITY_ID: device_name,
                     }
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
