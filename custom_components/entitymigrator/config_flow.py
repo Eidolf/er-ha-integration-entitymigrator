@@ -135,7 +135,7 @@ def run_db_migration(
                 old_u_norm = old_unit.strip().lower()
                 new_u_norm = new_unit.strip().lower()
                 if old_u_norm != new_u_norm:
-                    raise ValueError(f"UNIT_MISMATCH:{old_unit}:{new_unit}")
+                    raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
 
             if not new_meta:
                 # Create metadata entry for new entity
@@ -391,17 +391,34 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Failed to list statistic IDs: %s", err)
             old_entities = set()
 
-        all_entities = set(self.hass.states.async_entity_ids())
-        all_entities.update(old_entities)
-        all_entities_options = sorted(list(all_entities))
+        options_list = []
+        for entity_id in sorted(list(all_entities)):
+            state = self.hass.states.get(entity_id)
+            val_info = ""
+            if state:
+                val = state.state
+                unit = state.attributes.get("unit_of_measurement", "")
+                val_info = f" (Aktuell: {val} {unit})"
+            options_list.append(
+                selector.SelectOptionDict(
+                    value=entity_id,
+                    label=f"{entity_id}{val_info}"
+                )
+            )
 
         if user_input is not None:
             mappings = []
             for entry in device_entities:
-                key = entry.entity_id.replace(".", "__")
-                old_entity = user_input.get(key)
-                if old_entity:
-                    mappings.append((old_entity, entry.entity_id))
+                key_base = entry.entity_id.replace(".", "__")
+                matched_key = None
+                for k in user_input:
+                    if k.startswith(key_base):
+                        matched_key = k
+                        break
+                if matched_key:
+                    old_entity = user_input.get(matched_key)
+                    if old_entity:
+                        mappings.append((old_entity, entry.entity_id))
 
             if not mappings:
                 errors["base"] = "no_device_entities"
@@ -428,7 +445,26 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return await self.async_step_summary()
                 except ValueError as err:
                     if str(err).startswith("UNIT_MISMATCH:"):
-                        errors["base"] = "unit_mismatch"
+                        parts = str(err).split(":")
+                        bad_new_entity = parts[2]
+                        bad_key_base = bad_new_entity.replace(".", "__")
+                        
+                        found_key = None
+                        for entry in device_entities:
+                            if entry.entity_id == bad_new_entity:
+                                new_state = self.hass.states.get(entry.entity_id)
+                                val_info = ""
+                                if new_state:
+                                    val = new_state.state
+                                    unit = new_state.attributes.get("unit_of_measurement", "")
+                                    val_info = f" (Aktuell: {val} {unit})"
+                                found_key = f"{bad_key_base}{val_info}"
+                                break
+                        
+                        if found_key:
+                            errors[found_key] = "unit_mismatch"
+                        else:
+                            errors["base"] = "unit_mismatch"
                     else:
                         errors["base"] = "db_error"
                 except Exception:
@@ -437,12 +473,20 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Build schema dynamically for each entity of the device
         schema_fields = {}
         for entry in device_entities:
-            key = entry.entity_id.replace(".", "__")
+            key_base = entry.entity_id.replace(".", "__")
+            new_state = self.hass.states.get(entry.entity_id)
+            val_info = ""
+            if new_state:
+                val = new_state.state
+                unit = new_state.attributes.get("unit_of_measurement", "")
+                val_info = f" (Aktuell: {val} {unit})"
+            
+            key = f"{key_base}{val_info}"
             schema_fields[
                 vol.Optional(key, description={"suggested_value": ""})
             ] = selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=all_entities_options,
+                    options=options_list,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                     custom_value=True,
                 )
@@ -472,9 +516,20 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Failed to list statistic IDs: %s", err)
             old_entities = set()
 
-        all_entities = set(self.hass.states.async_entity_ids())
-        all_entities.update(old_entities)
-        all_entities_options = sorted(list(all_entities))
+        options_list = []
+        for entity_id in sorted(list(all_entities)):
+            state = self.hass.states.get(entity_id)
+            val_info = ""
+            if state:
+                val = state.state
+                unit = state.attributes.get("unit_of_measurement", "")
+                val_info = f" (Aktuell: {val} {unit})"
+            options_list.append(
+                selector.SelectOptionDict(
+                    value=entity_id,
+                    label=f"{entity_id}{val_info}"
+                )
+            )
 
         if user_input is not None:
             old_entity = user_input[CONF_OLD_ENTITY_ID]
@@ -507,7 +562,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return await self.async_step_summary()
                 except ValueError as err:
                     if str(err).startswith("UNIT_MISMATCH:"):
-                        errors["base"] = "unit_mismatch"
+                        errors[CONF_NEW_ENTITY_ID] = "unit_mismatch"
                     else:
                         errors["base"] = "db_error"
                 except Exception:
@@ -517,14 +572,14 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_OLD_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=all_entities_options,
+                        options=options_list,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                         custom_value=True,
                     )
                 ),
                 vol.Required(CONF_NEW_ENTITY_ID): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=all_entities_options,
+                        options=options_list,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                         custom_value=True,
                     )
