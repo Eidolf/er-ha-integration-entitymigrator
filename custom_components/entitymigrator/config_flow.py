@@ -87,6 +87,7 @@ def run_db_migration(
                     {"old": old_entity}
                 )
             
+            session.commit()
             result_summary["deleted"] = "Ja"
 
         # 3. Get old metadata
@@ -99,7 +100,6 @@ def run_db_migration(
             _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
             result_summary["status"] = "Erfolgreich (keine LTS vorhanden)"
             result_summary["migration_type"] = "Nur Kurzzeit-Zustände (Zustandsverlauf)"
-            session.commit()
             return result_summary
 
         old_meta_id, has_sum, source, unit, has_mean = old_meta
@@ -142,6 +142,7 @@ def run_db_migration(
             text(f"DELETE FROM statistics_short_term WHERE metadata_id = :new_id AND {time_col} < :time_val"),
             {"new_id": new_meta_id, "time_val": time_val}
         )
+        session.commit()
 
         # 6. Offset-Berechnung (for counters/sums)
         if has_sum:
@@ -170,6 +171,7 @@ def run_db_migration(
                         text(f"UPDATE statistics_short_term SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
                         {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
                     )
+                    session.commit()
 
         # 7. Perform the migration (UPDATE)
         session.execute(
@@ -180,6 +182,7 @@ def run_db_migration(
             text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
             {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
         )
+        session.commit()
 
         # 8. Cleanup old statistics if requested
         if delete_old:
@@ -195,8 +198,8 @@ def run_db_migration(
                 text("DELETE FROM statistics_meta WHERE id = :old_id"),
                 {"old_id": old_meta_id}
             )
+            session.commit()
 
-        session.commit()
         return result_summary
     except Exception as err:
         session.rollback()
