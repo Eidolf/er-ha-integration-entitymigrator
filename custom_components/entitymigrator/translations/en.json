@@ -39,7 +39,8 @@
       "db_error": "Database error occurred during migration. Rollback executed.",
       "same_entity": "Old and new entity must not be identical.",
       "no_statistics": "The selected old entity does not have long-term statistics.",
-      "no_device_entities": "No entities found for this device."
+      "no_device_entities": "No entities found for this device.",
+      "unit_mismatch": "The physical units of the entities do not match. Please ensure both entities use the same unit (e.g. Wh or kWh)."
     },
     "abort": {
       "already_configured": "Device is already configured"

@@ -112,14 +112,30 @@ def run_db_migration(
                 result_summary["details"].append(f"{old_entity} -> {new_entity}: Keine LTS vorhanden")
                 continue
 
-            old_meta_id, has_sum, source, unit, has_mean = old_meta
+            old_meta_id, has_sum, source, old_unit, has_mean = old_meta
             has_lts_any = True
 
             # 4. Get or create new metadata
             new_meta = session.execute(
-                text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
+                text("SELECT id, unit_of_measurement FROM statistics_meta WHERE statistic_id = :new"),
                 {"new": new_entity}
             ).fetchone()
+
+            new_unit = None
+            if new_meta:
+                new_meta_id, new_unit = new_meta
+            else:
+                # Get unit of measurement from states if new metadata doesn't exist yet
+                new_state = hass.states.get(new_entity)
+                if new_state:
+                    new_unit = new_state.attributes.get("unit_of_measurement")
+
+            # Validate unit matching
+            if old_unit and new_unit:
+                old_u_norm = old_unit.strip().lower()
+                new_u_norm = new_unit.strip().lower()
+                if old_u_norm != new_u_norm:
+                    raise ValueError(f"UNIT_MISMATCH:{old_unit}:{new_unit}")
 
             if not new_meta:
                 # Create metadata entry for new entity
@@ -131,7 +147,7 @@ def run_db_migration(
                     {
                         "new": new_entity,
                         "source": source or "recorder",
-                        "unit": unit,
+                        "unit": old_unit,
                         "has_mean": has_mean,
                         "has_sum": has_sum,
                     }
@@ -163,13 +179,37 @@ def run_db_migration(
                     {"old_id": old_meta_id, "time_val": time_val}
                 ).fetchone()
 
+                # Fallback 1: If no old sum before cutoff_date, get the absolute first record of the old entity
+                if old_sum_row is None or old_sum_row[0] is None:
+                    old_sum_row = session.execute(
+                        text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id ORDER BY {time_col} ASC LIMIT 1"),
+                        {"old_id": old_meta_id}
+                    ).fetchone()
+
                 # First sum of new entity after cutoff_date
                 new_sum_row = session.execute(
                     text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id AND {time_col} >= :time_val ORDER BY {time_col} ASC LIMIT 1"),
                     {"new_id": new_meta_id, "time_val": time_val}
                 ).fetchone()
 
-                if old_sum_row is not None and new_sum_row is not None:
+                # Fallback 2: If no new sum after cutoff_date, get the absolute first record of the new entity
+                if new_sum_row is None or new_sum_row[0] is None:
+                    new_sum_row = session.execute(
+                        text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id ORDER BY {time_col} ASC LIMIT 1"),
+                        {"new_id": new_meta_id}
+                    ).fetchone()
+
+                # Fallback 3: If still no new sum, use the current state value of the new entity in HA
+                if new_sum_row is None or new_sum_row[0] is None:
+                    new_state = hass.states.get(new_entity)
+                    if new_state is not None:
+                        try:
+                            val = float(new_state.state)
+                            new_sum_row = (val,)
+                        except (ValueError, TypeError):
+                            pass
+
+                if old_sum_row is not None and old_sum_row[0] is not None and new_sum_row is not None and new_sum_row[0] is not None:
                     old_sum = old_sum_row[0] or 0.0
                     new_sum = new_sum_row[0] or 0.0
                     offset = old_sum - new_sum
@@ -386,6 +426,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
+                except ValueError as err:
+                    if str(err).startswith("UNIT_MISMATCH:"):
+                        errors["base"] = "unit_mismatch"
+                    else:
+                        errors["base"] = "db_error"
                 except Exception:
                     errors["base"] = "db_error"
 
@@ -460,6 +505,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
+                except ValueError as err:
+                    if str(err).startswith("UNIT_MISMATCH:"):
+                        errors["base"] = "unit_mismatch"
+                    else:
+                        errors["base"] = "db_error"
                 except Exception:
                     errors["base"] = "db_error"
 
