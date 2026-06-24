@@ -401,11 +401,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if state:
                 val = state.state
                 unit = state.attributes.get("unit_of_measurement", "")
-                val_info = f" (Aktuell: {val} {unit})"
+                val_info = f"[{val} {unit}] "
             options_list.append(
                 selector.SelectOptionDict(
                     value=entity_id,
-                    label=f"{entity_id}{val_info}"
+                    label=f"{val_info}{entity_id}"
                 )
             )
 
@@ -415,7 +415,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 key_base = entry.entity_id.replace(".", "__")
                 matched_key = None
                 for k in user_input:
-                    if k.startswith(key_base):
+                    if k.endswith(key_base):
                         matched_key = k
                         break
                 if matched_key:
@@ -460,8 +460,8 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 if new_state:
                                     val = new_state.state
                                     unit = new_state.attributes.get("unit_of_measurement", "")
-                                    val_info = f" (Aktuell: {val} {unit})"
-                                found_key = f"{bad_key_base}{val_info}"
+                                    val_info = f"[{val} {unit}] "
+                                found_key = f"{val_info}{bad_key_base}"
                                 break
                         
                         if found_key:
@@ -482,9 +482,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if new_state:
                 val = new_state.state
                 unit = new_state.attributes.get("unit_of_measurement", "")
-                val_info = f" (Aktuell: {val} {unit})"
+                val_info = f"[{val} {unit}] "
             
-            key = f"{key_base}{val_info}"
+            key = f"{val_info}{key_base}"
             schema_fields[
                 vol.Optional(key, description={"suggested_value": ""})
             ] = selector.SelectSelector(
@@ -529,11 +529,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if state:
                 val = state.state
                 unit = state.attributes.get("unit_of_measurement", "")
-                val_info = f" (Aktuell: {val} {unit})"
+                val_info = f"[{val} {unit}] "
             options_list.append(
                 selector.SelectOptionDict(
                     value=entity_id,
-                    label=f"{entity_id}{val_info}"
+                    label=f"{val_info}{entity_id}"
                 )
             )
 
