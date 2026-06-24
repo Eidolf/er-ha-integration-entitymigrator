@@ -391,6 +391,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Failed to list statistic IDs: %s", err)
             old_entities = set()
 
+        all_entities = set(self.hass.states.async_entity_ids())
+        all_entities.update(old_entities)
+
         options_list = []
         for entity_id in sorted(list(all_entities)):
             state = self.hass.states.get(entity_id)
@@ -515,6 +518,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as err:
             _LOGGER.error("Failed to list statistic IDs: %s", err)
             old_entities = set()
+
+        all_entities = set(self.hass.states.async_entity_ids())
+        all_entities.update(old_entities)
 
         options_list = []
         for entity_id in sorted(list(all_entities)):
