@@ -36,13 +36,19 @@ def run_db_migration(
     new_entity: str,
     cutoff_date_str: str,
     delete_old: bool,
-) -> None:
+) -> dict[str, Any]:
     """Run the database migration transaction in the executor thread."""
     dt = dt_util.parse_datetime(cutoff_date_str)
     if dt is None:
         raise ValueError("Invalid datetime format")
     dt = dt_util.as_utc(dt)
     ts = dt.timestamp()
+
+    result_summary = {
+        "status": "Erfolgreich",
+        "migration_type": "Langzeitstatistiken (LTS)",
+        "deleted": "Nein",
+    }
 
     session = get_instance(hass).get_session()
     try:
@@ -52,20 +58,53 @@ def run_db_migration(
         time_col = "start_ts" if has_start_ts else "start"
         time_val = ts if has_start_ts else dt
 
-        # 2. Get old metadata
+        # 2. Cleanup old states history if requested
+        if delete_old:
+            # Check if states table has metadata_id (modern HA versions) or entity_id (older HA versions)
+            states_query = session.execute(text("SELECT * FROM states LIMIT 1"))
+            has_states_metadata = "metadata_id" in states_query.keys()
+            has_entity_id = "entity_id" in states_query.keys()
+
+            if has_states_metadata:
+                states_meta = session.execute(
+                    text("SELECT metadata_id FROM states_meta WHERE entity_id = :old"),
+                    {"old": old_entity}
+                ).fetchone()
+                if states_meta:
+                    states_meta_id = states_meta[0]
+                    session.execute(
+                        text("DELETE FROM states WHERE metadata_id = :meta_id"),
+                        {"meta_id": states_meta_id}
+                    )
+                    session.execute(
+                        text("DELETE FROM states_meta WHERE metadata_id = :meta_id"),
+                        {"meta_id": states_meta_id}
+                    )
+            
+            if has_entity_id:
+                session.execute(
+                    text("DELETE FROM states WHERE entity_id = :old"),
+                    {"old": old_entity}
+                )
+            
+            result_summary["deleted"] = "Ja"
+
+        # 3. Get old metadata
         old_meta = session.execute(
             text("SELECT id, has_sum, source, unit_of_measurement, has_mean FROM statistics_meta WHERE statistic_id = :old"),
             {"old": old_entity}
         ).fetchone()
 
         if not old_meta:
-            _LOGGER.warning("Old entity %s has no statistics metadata; skipping migration.", old_entity)
+            _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
+            result_summary["status"] = "Erfolgreich (keine LTS vorhanden)"
+            result_summary["migration_type"] = "Nur Kurzzeit-Zustände (Zustandsverlauf)"
             session.commit()
-            return
+            return result_summary
 
         old_meta_id, has_sum, source, unit, has_mean = old_meta
 
-        # 3. Get or create new metadata
+        # 4. Get or create new metadata
         new_meta = session.execute(
             text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
             {"new": new_entity}
@@ -94,7 +133,7 @@ def run_db_migration(
 
         new_meta_id = new_meta[0]
 
-        # 4. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
+        # 5. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
         session.execute(
             text(f"DELETE FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
             {"new_id": new_meta_id, "time_val": time_val}
@@ -104,7 +143,7 @@ def run_db_migration(
             {"new_id": new_meta_id, "time_val": time_val}
         )
 
-        # 5. Offset-Berechnung (for counters/sums)
+        # 6. Offset-Berechnung (for counters/sums)
         if has_sum:
             # Last sum of old entity before cutoff_date
             old_sum_row = session.execute(
@@ -132,7 +171,7 @@ def run_db_migration(
                         {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
                     )
 
-        # 6. Perform the migration (UPDATE)
+        # 7. Perform the migration (UPDATE)
         session.execute(
             text(f"UPDATE statistics SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
             {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
@@ -142,7 +181,7 @@ def run_db_migration(
             {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
         )
 
-        # 7. Cleanup old entity if requested
+        # 8. Cleanup old statistics if requested
         if delete_old:
             session.execute(
                 text("DELETE FROM statistics WHERE metadata_id = :old_id"),
@@ -158,6 +197,7 @@ def run_db_migration(
             )
 
         session.commit()
+        return result_summary
     except Exception as err:
         session.rollback()
         _LOGGER.error("Database migration error: %s", err)
@@ -169,6 +209,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Entity Statistics Migrator."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize flow."""
+        self.init_data: dict[str, Any] = {}
+        self.migration_result: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -200,7 +245,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "same_entity"
             else:
                 try:
-                    await get_instance(self.hass).async_add_executor_job(
+                    summary = await get_instance(self.hass).async_add_executor_job(
                         run_db_migration,
                         self.hass,
                         old_entity,
@@ -208,10 +253,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         cutoff_date,
                         delete_old,
                     )
-                    return self.async_create_entry(
-                        title=f"Migration: {old_entity} -> {new_entity}",
-                        data=user_input,
-                    )
+                    self.init_data = user_input
+                    self.migration_result = summary
+                    return await self.async_step_summary()
                 except Exception:
                     errors["base"] = "db_error"
 
@@ -251,3 +295,31 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=schema, errors=errors
         )
+
+    async def async_step_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle the summary step displaying the migration results."""
+        if user_input is not None:
+            old_entity = self.init_data[CONF_OLD_ENTITY_ID]
+            new_entity = self.init_data[CONF_NEW_ENTITY_ID]
+            return self.async_create_entry(
+                title=f"Migration: {old_entity} -> {new_entity}",
+                data=self.init_data,
+            )
+
+        res = self.migration_result
+        summary_text = (
+            f"**Zusammenfassung der Migration:**\n\n"
+            f"- **Status**: {res.get('status')}\n"
+            f"- **Migrationstyp**: {res.get('migration_type')}\n"
+            f"- **Daten gelöscht**: {res.get('deleted')}\n\n"
+            f"Klicke auf 'Absenden' (Fertigstellen), um die Konfiguration abzuschließen."
+        )
+
+        return self.async_show_form(
+            step_id="summary",
+            description_placeholders={"summary_text": summary_text},
+            data_schema=vol.Schema({}),
+        )
+
