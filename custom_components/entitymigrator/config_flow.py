@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -67,234 +68,262 @@ def run_db_migration(
             if not old_entity or not new_entity:
                 continue
 
-            # 2. Cleanup old states history if requested
-            if delete_old:
-                # Check if states table has metadata_id (modern HA versions) or entity_id (older HA versions)
-                states_query = session.execute(text("SELECT * FROM states LIMIT 1"))
-                has_states_metadata = "metadata_id" in states_query.keys()
-                has_entity_id = "entity_id" in states_query.keys()
+            max_attempts = 5
+            success = False
+            last_err = None
 
-                if has_states_metadata:
-                    states_meta = session.execute(
-                        text("SELECT metadata_id FROM states_meta WHERE entity_id = :old"),
+            for attempt in range(max_attempts):
+                try:
+                    # 2. Cleanup old states history if requested
+                    if delete_old:
+                        # Check if states table has metadata_id (modern HA versions) or entity_id (older HA versions)
+                        states_query = session.execute(text("SELECT * FROM states LIMIT 1"))
+                        has_states_metadata = "metadata_id" in states_query.keys()
+                        has_entity_id = "entity_id" in states_query.keys()
+
+                        if has_states_metadata:
+                            states_meta = session.execute(
+                                text("SELECT metadata_id FROM states_meta WHERE entity_id = :old"),
+                                {"old": old_entity}
+                            ).fetchone()
+                            if states_meta:
+                                states_meta_id = states_meta[0]
+                                session.execute(
+                                    text("DELETE FROM states WHERE metadata_id = :meta_id"),
+                                    {"meta_id": states_meta_id}
+                                )
+                                session.execute(
+                                    text("DELETE FROM states_meta WHERE metadata_id = :meta_id"),
+                                    {"meta_id": states_meta_id}
+                                )
+                                has_states_any = True
+                        
+                        if has_entity_id:
+                            session.execute(
+                                text("DELETE FROM states WHERE entity_id = :old"),
+                                {"old": old_entity}
+                            )
+                            has_states_any = True
+                        
+                        session.commit()
+                        result_summary["deleted"] = "Ja"
+
+                    # 3. Get old metadata
+                    old_meta = session.execute(
+                        text("SELECT id, has_sum, source, unit_of_measurement, has_mean FROM statistics_meta WHERE statistic_id = :old"),
                         {"old": old_entity}
                     ).fetchone()
-                    if states_meta:
-                        states_meta_id = states_meta[0]
-                        session.execute(
-                            text("DELETE FROM states WHERE metadata_id = :meta_id"),
-                            {"meta_id": states_meta_id}
-                        )
-                        session.execute(
-                            text("DELETE FROM states_meta WHERE metadata_id = :meta_id"),
-                            {"meta_id": states_meta_id}
-                        )
-                        has_states_any = True
-                
-                if has_entity_id:
-                    session.execute(
-                        text("DELETE FROM states WHERE entity_id = :old"),
-                        {"old": old_entity}
-                    )
-                    has_states_any = True
-                
-                session.commit()
-                result_summary["deleted"] = "Ja"
 
-            # 3. Get old metadata
-            old_meta = session.execute(
-                text("SELECT id, has_sum, source, unit_of_measurement, has_mean FROM statistics_meta WHERE statistic_id = :old"),
-                {"old": old_entity}
-            ).fetchone()
+                    if not old_meta:
+                        _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
+                        result_summary["details"].append(f"{old_entity} -> {new_entity}: Keine LTS vorhanden")
+                        success = True
+                        break
 
-            if not old_meta:
-                _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
-                result_summary["details"].append(f"{old_entity} -> {new_entity}: Keine LTS vorhanden")
-                continue
+                    old_meta_id, has_sum, source, old_unit, has_mean = old_meta
+                    has_lts_any = True
 
-            old_meta_id, has_sum, source, old_unit, has_mean = old_meta
-            has_lts_any = True
+                    # 4. Get or create new metadata
+                    new_meta = session.execute(
+                        text("SELECT id, unit_of_measurement FROM statistics_meta WHERE statistic_id = :new"),
+                        {"new": new_entity}
+                    ).fetchone()
 
-            # 4. Get or create new metadata
-            new_meta = session.execute(
-                text("SELECT id, unit_of_measurement FROM statistics_meta WHERE statistic_id = :new"),
-                {"new": new_entity}
-            ).fetchone()
-
-            new_unit = None
-            if new_meta:
-                new_meta_id, new_unit = new_meta
-            else:
-                # Get unit of measurement from states if new metadata doesn't exist yet
-                new_state = hass.states.get(new_entity)
-                if new_state:
-                    new_unit = new_state.attributes.get("unit_of_measurement")
-
-            # Validate unit matching and determine scaling factor
-            scale_factor = 1.0
-            if old_unit and new_unit:
-                old_u_norm = old_unit.strip().lower()
-                new_u_norm = new_unit.strip().lower()
-                if old_u_norm != new_u_norm:
-                    # Check compatible conversions for Wh / kWh / MWh
-                    if old_u_norm == "kwh" and new_u_norm == "wh":
-                        scale_factor = 1000.0
-                    elif old_u_norm == "wh" and new_u_norm == "kwh":
-                        scale_factor = 0.001
-                    elif old_u_norm == "mwh" and new_u_norm == "wh":
-                        scale_factor = 1000000.0
-                    elif old_u_norm == "wh" and new_u_norm == "mwh":
-                        scale_factor = 0.000001
-                    elif old_u_norm == "mwh" and new_u_norm == "kwh":
-                        scale_factor = 1000.0
-                    elif old_u_norm == "kwh" and new_u_norm == "mwh":
-                        scale_factor = 0.001
+                    new_unit = None
+                    if new_meta:
+                        new_meta_id, new_unit = new_meta
                     else:
-                        raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
+                        # Get unit of measurement from states if new metadata doesn't exist yet
+                        new_state = hass.states.get(new_entity)
+                        if new_state:
+                            new_unit = new_state.attributes.get("unit_of_measurement")
 
-            if not new_meta:
-                # Create metadata entry for new entity
-                session.execute(
-                    text(
-                        "INSERT INTO statistics_meta (statistic_id, source, unit_of_measurement, has_mean, has_sum) "
-                        "VALUES (:new, :source, :unit, :has_mean, :has_sum)"
-                    ),
-                    {
-                        "new": new_entity,
-                        "source": source or "recorder",
-                        "unit": old_unit,
-                        "has_mean": has_mean,
-                        "has_sum": has_sum,
-                    }
-                )
-                session.commit()
-                new_meta = session.execute(
-                    text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
-                    {"new": new_entity}
-                ).fetchone()
+                    # Validate unit matching and determine scaling factor
+                    scale_factor = 1.0
+                    if old_unit and new_unit:
+                        old_u_norm = old_unit.strip().lower()
+                        new_u_norm = new_unit.strip().lower()
+                        if old_u_norm != new_u_norm:
+                            # Check compatible conversions for Wh / kWh / MWh
+                            if old_u_norm == "kwh" and new_u_norm == "wh":
+                                scale_factor = 1000.0
+                            elif old_u_norm == "wh" and new_u_norm == "kwh":
+                                scale_factor = 0.001
+                            elif old_u_norm == "mwh" and new_u_norm == "wh":
+                                scale_factor = 1000000.0
+                            elif old_u_norm == "wh" and new_u_norm == "mwh":
+                                scale_factor = 0.000001
+                            elif old_u_norm == "mwh" and new_u_norm == "kwh":
+                                scale_factor = 1000.0
+                            elif old_u_norm == "kwh" and new_u_norm == "mwh":
+                                scale_factor = 0.001
+                            else:
+                                raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
 
-            new_meta_id = new_meta[0]
-
-            # 5. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
-            session.execute(
-                text(f"DELETE FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
-                {"new_id": new_meta_id, "time_val": time_val}
-            )
-            session.execute(
-                text(f"DELETE FROM statistics_short_term WHERE metadata_id = :new_id AND {time_col} < :time_val"),
-                {"new_id": new_meta_id, "time_val": time_val}
-            )
-            session.commit()
-
-            # 6. Offset-Berechnung (for counters/sums)
-            if has_sum:
-                # Last sum of old entity before cutoff_date
-                old_sum_row = session.execute(
-                    text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id AND {time_col} < :time_val ORDER BY {time_col} DESC LIMIT 1"),
-                    {"old_id": old_meta_id, "time_val": time_val}
-                ).fetchone()
-
-                # Fallback 1: If no old sum before cutoff_date, get the absolute first record of the old entity
-                if old_sum_row is None or old_sum_row[0] is None:
-                    old_sum_row = session.execute(
-                        text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id ORDER BY {time_col} ASC LIMIT 1"),
-                        {"old_id": old_meta_id}
-                    ).fetchone()
-
-                # First sum of new entity after cutoff_date
-                new_sum_row = session.execute(
-                    text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id AND {time_col} >= :time_val ORDER BY {time_col} ASC LIMIT 1"),
-                    {"new_id": new_meta_id, "time_val": time_val}
-                ).fetchone()
-
-                # Fallback 2: If no new sum after cutoff_date, get the absolute first record of the new entity
-                if new_sum_row is None or new_sum_row[0] is None:
-                    new_sum_row = session.execute(
-                        text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id ORDER BY {time_col} ASC LIMIT 1"),
-                        {"new_id": new_meta_id}
-                    ).fetchone()
-
-                # Fallback 3: If still no new sum, use the current state value of the new entity in HA
-                if new_sum_row is None or new_sum_row[0] is None:
-                    new_state = hass.states.get(new_entity)
-                    if new_state is not None:
-                        try:
-                            val = float(new_state.state)
-                            new_sum_row = (val,)
-                        except (ValueError, TypeError):
-                            pass
-
-                if old_sum_row is not None and old_sum_row[0] is not None and new_sum_row is not None and new_sum_row[0] is not None:
-                    old_sum = (old_sum_row[0] or 0.0) * scale_factor
-                    new_sum = new_sum_row[0] or 0.0
-                    offset = old_sum - new_sum
-                    if offset != 0:
+                    if not new_meta:
+                        # Create metadata entry for new entity
                         session.execute(
-                            text(f"UPDATE statistics SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
-                            {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
+                            text(
+                                "INSERT INTO statistics_meta (statistic_id, source, unit_of_measurement, has_mean, has_sum) "
+                                "VALUES (:new, :source, :unit, :has_mean, :has_sum)"
+                            ),
+                            {
+                                "new": new_entity,
+                                "source": source or "recorder",
+                                "unit": old_unit,
+                                "has_mean": has_mean,
+                                "has_sum": has_sum,
+                            }
+                        )
+                        session.commit()
+                        new_meta = session.execute(
+                            text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
+                            {"new": new_entity}
+                        ).fetchone()
+
+                    new_meta_id = new_meta[0]
+
+                    # 5. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
+                    session.execute(
+                        text(f"DELETE FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
+                        {"new_id": new_meta_id, "time_val": time_val}
+                    )
+                    session.execute(
+                        text(f"DELETE FROM statistics_short_term WHERE metadata_id = :new_id AND {time_col} < :time_val"),
+                        {"new_id": new_meta_id, "time_val": time_val}
+                    )
+                    session.commit()
+
+                    # 6. Offset-Berechnung (for counters/sums)
+                    if has_sum:
+                        # Last sum of old entity before cutoff_date
+                        old_sum_row = session.execute(
+                            text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id AND {time_col} < :time_val ORDER BY {time_col} DESC LIMIT 1"),
+                            {"old_id": old_meta_id, "time_val": time_val}
+                        ).fetchone()
+
+                        # Fallback 1: If no old sum before cutoff_date, get the absolute first record of the old entity
+                        if old_sum_row is None or old_sum_row[0] is None:
+                            old_sum_row = session.execute(
+                                text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id ORDER BY {time_col} ASC LIMIT 1"),
+                                {"old_id": old_meta_id}
+                            ).fetchone()
+
+                        # First sum of new entity after cutoff_date
+                        new_sum_row = session.execute(
+                            text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id AND {time_col} >= :time_val ORDER BY {time_col} ASC LIMIT 1"),
+                            {"new_id": new_meta_id, "time_val": time_val}
+                        ).fetchone()
+
+                        # Fallback 2: If no new sum after cutoff_date, get the absolute first record of the new entity
+                        if new_sum_row is None or new_sum_row[0] is None:
+                            new_sum_row = session.execute(
+                                text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id ORDER BY {time_col} ASC LIMIT 1"),
+                                {"new_id": new_meta_id}
+                            ).fetchone()
+
+                        # Fallback 3: If still no new sum, use the current state value of the new entity in HA
+                        if new_sum_row is None or new_sum_row[0] is None:
+                            new_state = hass.states.get(new_entity)
+                            if new_state is not None:
+                                try:
+                                    val = float(new_state.state)
+                                    new_sum_row = (val,)
+                                except (ValueError, TypeError):
+                                    pass
+
+                        if old_sum_row is not None and old_sum_row[0] is not None and new_sum_row is not None and new_sum_row[0] is not None:
+                            old_sum = (old_sum_row[0] or 0.0) * scale_factor
+                            new_sum = new_sum_row[0] or 0.0
+                            offset = old_sum - new_sum
+                            if offset != 0:
+                                session.execute(
+                                    text(f"UPDATE statistics SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
+                                    {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
+                                )
+                                session.execute(
+                                    text(f"UPDATE statistics_short_term SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
+                                    {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
+                                )
+                                session.commit()
+
+                    # 7. Perform the migration (UPDATE)
+                    if scale_factor != 1.0:
+                        session.execute(
+                            text(
+                                f"UPDATE statistics SET "
+                                f"metadata_id = :new_id, "
+                                f"sum = sum * :factor, "
+                                f"state = state * :factor, "
+                                f"min = min * :factor, "
+                                f"max = max * :factor, "
+                                f"mean = mean * :factor "
+                                f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
+                            ),
+                            {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
                         )
                         session.execute(
-                            text(f"UPDATE statistics_short_term SET sum = sum + :offset WHERE metadata_id = :new_id AND {time_col} >= :time_val"),
-                            {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
+                            text(
+                                f"UPDATE statistics_short_term SET "
+                                f"metadata_id = :new_id, "
+                                f"sum = sum * :factor, "
+                                f"state = state * :factor, "
+                                f"min = min * :factor, "
+                                f"max = max * :factor, "
+                                f"mean = mean * :factor "
+                                f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
+                            ),
+                            {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
+                        )
+                    else:
+                        session.execute(
+                            text(f"UPDATE statistics SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
+                            {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
+                        )
+                        session.execute(
+                            text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
+                            {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
+                        )
+                    session.commit()
+
+                    # 8. Cleanup old statistics if requested
+                    if delete_old:
+                        session.execute(
+                            text("DELETE FROM statistics WHERE metadata_id = :old_id"),
+                            {"old_id": old_meta_id}
+                        )
+                        session.execute(
+                            text("DELETE FROM statistics_short_term WHERE metadata_id = :old_id"),
+                            {"old_id": old_meta_id}
+                        )
+                        session.execute(
+                            text("DELETE FROM statistics_meta WHERE id = :old_id"),
+                            {"old_id": old_meta_id}
                         )
                         session.commit()
 
-            # 7. Perform the migration (UPDATE)
-            if scale_factor != 1.0:
-                session.execute(
-                    text(
-                        f"UPDATE statistics SET "
-                        f"metadata_id = :new_id, "
-                        f"sum = sum * :factor, "
-                        f"state = state * :factor, "
-                        f"min = min * :factor, "
-                        f"max = max * :factor, "
-                        f"mean = mean * :factor "
-                        f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
-                    ),
-                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
-                )
-                session.execute(
-                    text(
-                        f"UPDATE statistics_short_term SET "
-                        f"metadata_id = :new_id, "
-                        f"sum = sum * :factor, "
-                        f"state = state * :factor, "
-                        f"min = min * :factor, "
-                        f"max = max * :factor, "
-                        f"mean = mean * :factor "
-                        f"WHERE metadata_id = :old_id AND {time_col} < :time_val"
-                    ),
-                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val, "factor": scale_factor}
-                )
-            else:
-                session.execute(
-                    text(f"UPDATE statistics SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
-                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
-                )
-                session.execute(
-                    text(f"UPDATE statistics_short_term SET metadata_id = :new_id WHERE metadata_id = :old_id AND {time_col} < :time_val"),
-                    {"new_id": new_meta_id, "old_id": old_meta_id, "time_val": time_val}
-                )
-            session.commit()
+                    result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
+                    success = True
+                    break
+                except ValueError as err:
+                    # Let unit mismatches bubble up immediately
+                    raise err
+                except Exception as err:
+                    session.rollback()
+                    err_str = str(err).lower()
+                    if "locked" in err_str or "busy" in err_str or "database is locked" in err_str:
+                        _LOGGER.warning(
+                            "Database locked during migration of %s -> %s. Retrying in 1 second... (Attempt %s/%s)",
+                            old_entity, new_entity, attempt + 1, max_attempts
+                        )
+                        time.sleep(1.0)
+                        last_err = err
+                        continue
+                    raise err
 
-            # 8. Cleanup old statistics if requested
-            if delete_old:
-                session.execute(
-                    text("DELETE FROM statistics WHERE metadata_id = :old_id"),
-                    {"old_id": old_meta_id}
-                )
-                session.execute(
-                    text("DELETE FROM statistics_short_term WHERE metadata_id = :old_id"),
-                    {"old_id": old_meta_id}
-                )
-                session.execute(
-                    text("DELETE FROM statistics_meta WHERE id = :old_id"),
-                    {"old_id": old_meta_id}
-                )
-                session.commit()
-
-            result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
+            if not success:
+                _LOGGER.error("Failed to migrate %s -> %s after %s attempts due to database lock.", old_entity, new_entity, max_attempts)
+                raise last_err
 
         if not has_lts_any:
             result_summary["status"] = "Erfolgreich (keine LTS vorhanden)"
