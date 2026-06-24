@@ -74,6 +74,7 @@ def run_db_migration(
 
             for attempt in range(max_attempts):
                 try:
+                    session.rollback()
                     if session.bind.dialect.name == "sqlite":
                         session.execute(text("BEGIN IMMEDIATE"))
 
@@ -119,6 +120,7 @@ def run_db_migration(
                     if not old_meta:
                         _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
                         result_summary["details"].append(f"{old_entity} -> {new_entity}: Keine LTS vorhanden")
+                        session.rollback()
                         success = True
                         break
 
