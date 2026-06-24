@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Statistik-Migration",
+        "description": "INFO: Diese Integration migriert in Phase 1 ausschließlich die internen Home Assistant SQL-Daten-Tabellen. Daten in externen Datenbanken (wie InfluxDB) bleiben unangetastet, werden aber durch das Löschen von HA-Entitäten nicht gelöscht.",
+        "data": {
+          "old_entity_id": "Alte Entität (Quelle)",
+          "new_entity_id": "Neue Entität (Ziel)",
+          "cutoff_date": "Schnittdatum & Uhrzeit",
+          "delete_old": "Alte Entität nach erfolgreicher Migration vollständig aus der Datenbank löschen."
+        }
+      },
+      "summary": {
+        "title": "Migrations-Ergebnis",
+        "description": "{summary_text}"
+      }
+    },
+    "error": {
+      "db_error": "Datenbankfehler während der Migration aufgetreten. Rollback durchgeführt.",
+      "same_entity": "Alte und neue Entität dürfen nicht identisch sein.",
+      "no_statistics": "Die ausgewählte alte Entität besitzt keine Langzeitstatistiken."
+    },
+    "abort": {
+      "already_configured": "Gerät ist bereits konfiguriert"
+    }
+  }
+}
