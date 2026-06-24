@@ -358,7 +358,8 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             mappings = []
             for entry in device_entities:
-                old_entity = user_input.get(entry.entity_id)
+                key = entry.entity_id.replace(".", "__")
+                old_entity = user_input.get(key)
                 if old_entity:
                     mappings.append((old_entity, entry.entity_id))
 
@@ -385,10 +386,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Build schema dynamically for each entity of the device
         schema_fields = {}
         for entry in device_entities:
-            # Field key is the new/current entity ID. Label is friendly name or ID.
-            label = entry.name or entry.original_name or entry.entity_id
+            key = entry.entity_id.replace(".", "__")
             schema_fields[
-                vol.Optional(entry.entity_id, description={"suggested_value": ""})
+                vol.Optional(key, description={"suggested_value": ""})
             ] = selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=all_entities_options,
