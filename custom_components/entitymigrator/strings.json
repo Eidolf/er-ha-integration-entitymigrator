@@ -5,10 +5,29 @@
         "title": "Statistik-Migration",
         "description": "INFO: Diese Integration migriert in Phase 1 ausschließlich die internen Home Assistant SQL-Daten-Tabellen. Daten in externen Datenbanken (wie InfluxDB) bleiben unangetastet, werden aber durch das Löschen von HA-Entitäten nicht gelöscht.",
         "data": {
+          "mode": "Migrationsmodus",
+          "cutoff_date": "Schnittdatum & Uhrzeit",
+          "delete_old": "Alte Entitäten nach erfolgreicher Migration vollständig aus der Datenbank löschen."
+        }
+      },
+      "device": {
+        "title": "Geräte-Auswahl",
+        "description": "Wähle das übergeordnete Gerät (neues Gerät), dessen Entitäten du migrieren möchtest.",
+        "data": {
+          "device_id": "Gerät (Ziel)"
+        }
+      },
+      "device_map": {
+        "title": "Entitäten-Gegenüberstellung",
+        "description": "Ordne jeder neuen Entität des Gerätes die entsprechende alte Entität (Quelle) zu. Wenn eine Entität nicht migriert werden soll, lasse sie leer."
+      },
+      "loop": {
+        "title": "Manuelle Migration",
+        "description": "Ordne eine alte Entität einer neuen Entität zu.",
+        "data": {
           "old_entity_id": "Alte Entität (Quelle)",
           "new_entity_id": "Neue Entität (Ziel)",
-          "cutoff_date": "Schnittdatum & Uhrzeit",
-          "delete_old": "Alte Entität nach erfolgreicher Migration vollständig aus der Datenbank löschen."
+          "another": "Weitere Entität hinzufügen?"
         }
       },
       "summary": {
@@ -19,7 +38,8 @@
     "error": {
       "db_error": "Datenbankfehler während der Migration aufgetreten. Rollback durchgeführt.",
       "same_entity": "Alte und neue Entität dürfen nicht identisch sein.",
-      "no_statistics": "Die ausgewählte alte Entität besitzt keine Langzeitstatistiken."
+      "no_statistics": "Die ausgewählte alte Entität besitzt keine Langzeitstatistiken.",
+      "no_device_entities": "Keine Entitäten für dieses Gerät gefunden."
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"
