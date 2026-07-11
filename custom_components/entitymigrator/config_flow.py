@@ -64,23 +64,27 @@ def run_db_migration(
         has_lts_any = False
         has_states_any = False
 
-        for old_entity, new_entity in mappings:
-            if not old_entity or not new_entity:
-                continue
+        max_attempts = 5
+        success = False
+        last_err = None
 
-            max_attempts = 5
-            success = False
-            last_err = None
+        for attempt in range(max_attempts):
+            try:
+                session.rollback()
+                if session.bind.dialect.name == "sqlite":
+                    session.execute(text("PRAGMA busy_timeout = 10000"))
+                    session.execute(text("BEGIN IMMEDIATE"))
 
-            for attempt in range(max_attempts):
-                try:
-                    session.rollback()
-                    if session.bind.dialect.name == "sqlite":
-                        session.execute(text("BEGIN IMMEDIATE"))
+                result_summary["details"] = []
+                has_lts_any = False
+                has_states_any = False
+
+                for old_entity, new_entity in mappings:
+                    if not old_entity or not new_entity:
+                        continue
 
                     # 2. Cleanup old states history if requested
                     if delete_old:
-                        # Check if states table has metadata_id (modern HA versions) or entity_id (older HA versions)
                         states_query = session.execute(text("SELECT * FROM states LIMIT 1"))
                         has_states_metadata = "metadata_id" in states_query.keys()
                         has_entity_id = "entity_id" in states_query.keys()
@@ -120,9 +124,7 @@ def run_db_migration(
                     if not old_meta:
                         _LOGGER.warning("Old entity %s has no statistics metadata; skipping LTS migration.", old_entity)
                         result_summary["details"].append(f"{old_entity} -> {new_entity}: Keine LTS vorhanden")
-                        session.rollback()
-                        success = True
-                        break
+                        continue
 
                     old_meta_id, has_sum, source, old_unit, has_mean = old_meta
                     has_lts_any = True
@@ -137,18 +139,16 @@ def run_db_migration(
                     if new_meta:
                         new_meta_id, new_unit = new_meta
                     else:
-                        # Get unit of measurement from states if new metadata doesn't exist yet
                         new_state = hass.states.get(new_entity)
                         if new_state:
                             new_unit = new_state.attributes.get("unit_of_measurement")
 
-                    # Validate unit matching and determine scaling factor
+                    # Validate unit matching and scale factor
                     scale_factor = 1.0
                     if old_unit and new_unit:
                         old_u_norm = old_unit.strip().lower()
                         new_u_norm = new_unit.strip().lower()
                         if old_u_norm != new_u_norm:
-                            # Check compatible conversions for Wh / kWh / MWh
                             if old_u_norm == "kwh" and new_u_norm == "wh":
                                 scale_factor = 1000.0
                             elif old_u_norm == "wh" and new_u_norm == "kwh":
@@ -165,7 +165,6 @@ def run_db_migration(
                                 raise ValueError(f"UNIT_MISMATCH:{old_entity}:{new_entity}:{old_unit}:{new_unit}")
 
                     if not new_meta:
-                        # Create metadata entry for new entity
                         session.execute(
                             text(
                                 "INSERT INTO statistics_meta (statistic_id, source, unit_of_measurement, has_mean, has_sum) "
@@ -186,7 +185,7 @@ def run_db_migration(
 
                     new_meta_id = new_meta[0]
 
-                    # 5. Unique-Constraint-Bereinigung (Delete stats of the new entity before cutoff_date)
+                    # 5. Unique-Constraint-Bereinigung
                     session.execute(
                         text(f"DELETE FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
                         {"new_id": new_meta_id, "time_val": time_val}
@@ -196,35 +195,30 @@ def run_db_migration(
                         {"new_id": new_meta_id, "time_val": time_val}
                     )
 
-                    # 6. Offset-Berechnung (for counters/sums)
+                    # 6. Offset-Berechnung
                     if has_sum:
-                        # Last sum of old entity before cutoff_date
                         old_sum_row = session.execute(
                             text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id AND {time_col} < :time_val ORDER BY {time_col} DESC LIMIT 1"),
                             {"old_id": old_meta_id, "time_val": time_val}
                         ).fetchone()
 
-                        # Fallback 1: If no old sum before cutoff_date, get the absolute first record of the old entity
                         if old_sum_row is None or old_sum_row[0] is None:
                             old_sum_row = session.execute(
                                 text(f"SELECT sum FROM statistics WHERE metadata_id = :old_id ORDER BY {time_col} ASC LIMIT 1"),
                                 {"old_id": old_meta_id}
                             ).fetchone()
 
-                        # First sum of new entity after cutoff_date
                         new_sum_row = session.execute(
                             text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id AND {time_col} >= :time_val ORDER BY {time_col} ASC LIMIT 1"),
                             {"new_id": new_meta_id, "time_val": time_val}
                         ).fetchone()
 
-                        # Fallback 2: If no new sum after cutoff_date, get the absolute first record of the new entity
                         if new_sum_row is None or new_sum_row[0] is None:
                             new_sum_row = session.execute(
                                 text(f"SELECT sum FROM statistics WHERE metadata_id = :new_id ORDER BY {time_col} ASC LIMIT 1"),
                                 {"new_id": new_meta_id}
                             ).fetchone()
 
-                        # Fallback 3: If still no new sum, use the current state value of the new entity in HA
                         if new_sum_row is None or new_sum_row[0] is None:
                             new_state = hass.states.get(new_entity)
                             if new_state is not None:
@@ -248,7 +242,7 @@ def run_db_migration(
                                     {"offset": offset, "new_id": new_meta_id, "time_val": time_val}
                                 )
 
-                    # 7. Perform the migration (UPDATE)
+                    # 7. Perform migration (UPDATE)
                     if scale_factor != 1.0:
                         session.execute(
                             text(
@@ -301,29 +295,30 @@ def run_db_migration(
                             {"old_id": old_meta_id}
                         )
 
-                    session.commit()
                     result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
-                    success = True
-                    break
-                except ValueError as err:
-                    # Let unit mismatches bubble up immediately
-                    raise err
-                except Exception as err:
-                    session.rollback()
-                    err_str = str(err).lower()
-                    if "locked" in err_str or "busy" in err_str or "database is locked" in err_str:
-                        _LOGGER.warning(
-                            "Database locked during migration of %s -> %s. Retrying in 1 second... (Attempt %s/%s)",
-                            old_entity, new_entity, attempt + 1, max_attempts
-                        )
-                        time.sleep(1.0)
-                        last_err = err
-                        continue
-                    raise err
 
-            if not success:
-                _LOGGER.error("Failed to migrate %s -> %s after %s attempts due to database lock.", old_entity, new_entity, max_attempts)
-                raise last_err
+                session.commit()
+                success = True
+                break
+            except ValueError as err:
+                session.rollback()
+                raise err
+            except Exception as err:
+                session.rollback()
+                err_str = str(err).lower()
+                if "locked" in err_str or "busy" in err_str or "database is locked" in err_str:
+                    _LOGGER.warning(
+                        "Database locked during migration. Retrying in 2.0 seconds... (Attempt %s/%s)",
+                        attempt + 1, max_attempts
+                    )
+                    time.sleep(2.0)
+                    last_err = err
+                    continue
+                raise err
+
+        if not success:
+            _LOGGER.error("Failed to migrate mappings after %s attempts due to database lock.", max_attempts)
+            raise last_err
 
         if not has_lts_any:
             result_summary["status"] = "Erfolgreich (keine LTS vorhanden)"
