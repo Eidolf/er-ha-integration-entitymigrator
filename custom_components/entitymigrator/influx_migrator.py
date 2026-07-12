@@ -49,23 +49,33 @@ class InfluxV1Migrator:
         series_info = []
         total_points = 0
         
-        # Show all series matching the entity ID
-        q = f"SHOW SERIES WHERE \"entity_id\" = '{old_entity}'"
+        # Try full entity ID first
+        entity_to_query = old_entity
+        q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
         result = self.query(q)
         
         measurements = set()
         results = result.get("results", [])
-        if results and "series" in results[0]:
+        has_series = results and "series" in results[0]
+        
+        # If no series found and there is a dot, try stripped entity ID (object ID only)
+        if not has_series and "." in old_entity:
+            entity_to_query = old_entity.split(".", 1)[1]
+            q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
+            result = self.query(q)
+            results = result.get("results", [])
+            has_series = results and "series" in results[0]
+
+        if has_series:
             for series in results[0]["series"]:
                 for val in series.get("values", []):
-                    # Series value format is usually "measurement,tag1=val1,tag2=val2"
                     series_str = val[0]
                     measurement = series_str.split(",")[0]
                     measurements.add(measurement)
 
         for measurement in sorted(list(measurements)):
             # Get count of points for this measurement
-            count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{old_entity}'"
+            count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{entity_to_query}'"
             count_res = self.query(count_q)
             count = 0
             res_results = count_res.get("results", [])
@@ -84,13 +94,19 @@ class InfluxV1Migrator:
                 series_info.append({"measurement": measurement, "count": count})
                 total_points += count
 
-        return series_info, total_points
+        return series_info, total_points, entity_to_query
 
     def migrate_entity_data(self, old_entity, new_entity, delete_old=False, progress_callback=None):
         """Read points of old_entity, update tag to new_entity, write back, and optionally delete old."""
-        series_info, total_points = self.discover_series_and_counts(old_entity)
+        series_info, total_points, resolved_old_tag = self.discover_series_and_counts(old_entity)
         if total_points == 0:
             return {"status": "Success", "copied": 0, "deleted": 0}
+
+        # Resolve target tag value
+        # If the resolved old tag was stripped (didn't contain '.'), the new tag should be stripped too
+        resolved_new_tag = new_entity
+        if "." not in resolved_old_tag and "." in new_entity:
+            resolved_new_tag = new_entity.split(".", 1)[1]
 
         copied_count = 0
         deleted_count = 0
@@ -120,7 +136,7 @@ class InfluxV1Migrator:
             chunk_size = 5000
             offset = 0
             while True:
-                q = f"SELECT * FROM \"{measurement}\" WHERE \"entity_id\" = '{old_entity}' LIMIT {chunk_size} OFFSET {offset}"
+                q = f"SELECT * FROM \"{measurement}\" WHERE \"entity_id\" = '{resolved_old_tag}' LIMIT {chunk_size} OFFSET {offset}"
                 data_res = self.query(q)
                 
                 results = data_res.get("results", [])
@@ -167,8 +183,8 @@ class InfluxV1Migrator:
                         if col_name in tag_keys:
                             # Map old entity ID to new entity ID
                             val_str = str(col_val)
-                            if col_name == "entity_id" and val_str == old_entity:
-                                val_str = new_entity
+                            if col_name == "entity_id" and val_str == resolved_old_tag:
+                                val_str = resolved_new_tag
                             
                             # Escape tag key and value
                             tag_k = col_name.replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
@@ -210,9 +226,9 @@ class InfluxV1Migrator:
                     break
                 offset += chunk_size
 
-            # 3. Optionally delete the old entity data from this measurement
+            # 3. Optionally delete the old data from this measurement
             if delete_old and copied_count > 0:
-                del_q = f"DELETE FROM \"{measurement}\" WHERE \"entity_id\" = '{old_entity}'"
+                del_q = f"DELETE FROM \"{measurement}\" WHERE \"entity_id\" = '{resolved_old_tag}'"
                 self.query(del_q)
                 deleted_count += s["count"]
 
