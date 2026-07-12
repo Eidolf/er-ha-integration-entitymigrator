@@ -793,7 +793,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "not_confirmed"
 
-        warnings_text = "\n".join([f"- {w}" for w in warnings])
+        warnings_text = "\n\n".join([f"⚠️ {w}" for w in warnings])
         description_placeholders = {"warnings_text": warnings_text}
 
         schema = vol.Schema(
