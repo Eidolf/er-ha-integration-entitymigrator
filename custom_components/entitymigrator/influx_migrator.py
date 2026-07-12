@@ -90,7 +90,9 @@ class InfluxV1Migrator:
                             val_idx = idx
                             break
                     if val_idx != -1 and series_data.get("values"):
-                        count = int(series_data["values"][0][val_idx])
+                        raw_val = series_data["values"][0][val_idx]
+                        if raw_val is not None:
+                            count = int(raw_val)
             except Exception as e:
                 _LOGGER.warning("Could not count InfluxDB points for %s in %s (timeout/error): %s", entity_to_query, measurement, e)
                 count = -1

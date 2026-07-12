@@ -299,6 +299,7 @@ def run_db_migration(
                     result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
 
                 session.commit()
+                session.close()
                 success = True
                 break
             except ValueError as err:
@@ -359,11 +360,17 @@ def run_db_migration(
 
         return result_summary
     except Exception as err:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
         _LOGGER.error("Database migration error: %s", err)
         raise err
     finally:
-        session.close()
+        try:
+            session.close()
+        except Exception:
+            pass
 def check_migration_warnings(
     hass: HomeAssistant,
     mappings: list[tuple[str, str]],
