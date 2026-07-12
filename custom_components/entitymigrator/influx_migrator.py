@@ -53,7 +53,7 @@ class InfluxV1Migrator:
         # Try full entity ID first
         entity_to_query = old_entity
         q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
-        result = self.query(q)
+        result = self.query(q, timeout=120)
         
         measurements = set()
         results = result.get("results", [])
@@ -63,7 +63,7 @@ class InfluxV1Migrator:
         if not has_series and "." in old_entity:
             entity_to_query = old_entity.split(".", 1)[1]
             q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
-            result = self.query(q)
+            result = self.query(q, timeout=120)
             results = result.get("results", [])
             has_series = results and "series" in results[0]
 
