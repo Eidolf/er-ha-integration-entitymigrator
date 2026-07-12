@@ -993,10 +993,29 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the summary step displaying the migration results."""
         if user_input is not None:
             init_data = self.context.get("init_data", {})
-            old_entity = init_data.get(CONF_OLD_ENTITY_ID)
-            new_entity = init_data.get(CONF_NEW_ENTITY_ID)
+            mappings = self.context.get("mappings", [])
+
+            if len(mappings) == 1:
+                old_ent, new_ent = mappings[0]
+                old_clean = old_ent.split(".", 1)[1] if "." in old_ent else old_ent
+                new_clean = new_ent.split(".", 1)[1] if "." in new_ent else new_ent
+                title = f"{old_clean} -> {new_clean}"
+            elif len(mappings) > 1:
+                mapped_strs = []
+                for old_ent, new_ent in mappings[:2]:
+                    old_clean = old_ent.split(".", 1)[1] if "." in old_ent else old_ent
+                    new_clean = new_ent.split(".", 1)[1] if "." in new_ent else new_ent
+                    mapped_strs.append(f"{old_clean}->{new_clean}")
+                title = ", ".join(mapped_strs)
+                if len(mappings) > 2:
+                    title += f" ... (+{len(mappings) - 2})"
+            else:
+                old_entity = init_data.get(CONF_OLD_ENTITY_ID)
+                new_entity = init_data.get(CONF_NEW_ENTITY_ID)
+                title = f"{old_entity} -> {new_entity}"
+
             return self.async_create_entry(
-                title=f"Migration: {old_entity} -> {new_entity}",
+                title=f"Migration: {title}",
                 data=init_data,
             )
 
