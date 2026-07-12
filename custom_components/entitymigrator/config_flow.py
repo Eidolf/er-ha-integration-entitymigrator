@@ -333,6 +333,72 @@ def run_db_migration(
         raise err
     finally:
         session.close()
+def check_migration_warnings(
+    hass: HomeAssistant,
+    mappings: list[tuple[str, str]],
+    cutoff_date_str: str,
+) -> list[str]:
+    """Validate mappings before migrating to prevent accidental data loss/overwrite."""
+    dt = dt_util.parse_datetime(cutoff_date_str)
+    if dt is None:
+        return []
+    dt = dt_util.as_utc(dt)
+    ts = dt.timestamp()
+
+    session = get_instance(hass).get_session()
+    warnings = []
+    try:
+        test_query = session.execute(text("SELECT * FROM statistics LIMIT 1"))
+        has_start_ts = "start_ts" in test_query.keys()
+        time_col = "start_ts" if has_start_ts else "start"
+        time_val = ts if has_start_ts else dt
+
+        for old_entity, new_entity in mappings:
+            # 1. Check if old_entity statistics exist or count is 0
+            old_meta = session.execute(
+                text("SELECT id FROM statistics_meta WHERE statistic_id = :old"),
+                {"old": old_entity}
+            ).fetchone()
+            
+            if not old_meta:
+                warnings.append(
+                    f"Die Quell-Entität '{old_entity}' hat keine Statistiken in der Datenbank. "
+                    "Sie wurde eventuell bereits migriert."
+                )
+            else:
+                old_meta_id = old_meta[0]
+                count_row = session.execute(
+                    text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :old_id"),
+                    {"old_id": old_meta_id}
+                ).fetchone()
+                if not count_row or count_row[0] == 0:
+                    warnings.append(
+                        f"Die Quell-Entität '{old_entity}' hat 0 Statistik-Einträge in der Datenbank. "
+                        "Sie wurde eventuell bereits migriert."
+                    )
+
+            # 2. Check if new_entity already has statistics prior to cutoff (potential overwrite)
+            new_meta = session.execute(
+                text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
+                {"new": new_entity}
+            ).fetchone()
+            if new_meta:
+                new_meta_id = new_meta[0]
+                has_existing = session.execute(
+                    text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
+                    {"new_id": new_meta_id, "time_val": time_val}
+                ).fetchone()
+                if has_existing and has_existing[0] > 0:
+                    warnings.append(
+                        f"Die Ziel-Entität '{new_entity}' hat bereits {has_existing[0]} eigene Langzeitstatistiken "
+                        "vor dem Cutoff-Datum. Diese werden bei der Migration überschrieben!"
+                    )
+    except Exception as e:
+        _LOGGER.error("Fehler bei der Validierung der Migration: %s", e)
+    finally:
+        session.close()
+    return warnings
+
 
 
 class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -494,13 +560,15 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "no_device_entities"
             else:
                 try:
-                    summary = await get_instance(self.hass).async_add_executor_job(
-                        run_db_migration,
+                    warnings = await get_instance(self.hass).async_add_executor_job(
+                        check_migration_warnings,
                         self.hass,
                         mappings,
                         self.context["cutoff_date"],
-                        self.context["delete_old"],
                     )
+
+                    self.context["mappings"] = mappings
+
                     device_registry = dr.async_get(self.hass)
                     device_entry = device_registry.async_get(device_id)
                     device_name = device_id
@@ -511,6 +579,18 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_OLD_ENTITY_ID: f"Device Migration ({len(mappings)} Entitäten)",
                         CONF_NEW_ENTITY_ID: device_name,
                     }
+
+                    if warnings:
+                        self.context["migration_warnings"] = warnings
+                        return await self.async_step_confirm()
+
+                    summary = await get_instance(self.hass).async_add_executor_job(
+                        run_db_migration,
+                        self.hass,
+                        mappings,
+                        self.context["cutoff_date"],
+                        self.context["delete_old"],
+                    )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
                 except ValueError as err:
@@ -620,6 +700,22 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 # Process all mappings
                 try:
+                    warnings = await get_instance(self.hass).async_add_executor_job(
+                        check_migration_warnings,
+                        self.hass,
+                        self.context["mappings"],
+                        self.context["cutoff_date"],
+                    )
+
+                    self.context["init_data"] = {
+                        CONF_OLD_ENTITY_ID: f"Migration ({len(self.context['mappings'])} Entitäten)",
+                        CONF_NEW_ENTITY_ID: f"{len(self.context['mappings'])} Ziele",
+                    }
+
+                    if warnings:
+                        self.context["migration_warnings"] = warnings
+                        return await self.async_step_confirm()
+
                     summary = await get_instance(self.hass).async_add_executor_job(
                         run_db_migration,
                         self.hass,
@@ -627,10 +723,6 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["cutoff_date"],
                         self.context["delete_old"],
                     )
-                    self.context["init_data"] = {
-                        CONF_OLD_ENTITY_ID: f"Migration ({len(self.context['mappings'])} Entitäten)",
-                        CONF_NEW_ENTITY_ID: f"{len(self.context['mappings'])} Ziele",
-                    }
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
                 except ValueError as err:
@@ -669,6 +761,51 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="loop",
             data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle confirmation of warnings before executing migration."""
+        errors = {}
+        warnings = self.context.get("migration_warnings", [])
+
+        if user_input is not None:
+            if user_input.get("confirm"):
+                try:
+                    summary = await get_instance(self.hass).async_add_executor_job(
+                        run_db_migration,
+                        self.hass,
+                        self.context["mappings"],
+                        self.context["cutoff_date"],
+                        self.context["delete_old"],
+                    )
+                    self.context["migration_result"] = summary
+                    return await self.async_step_summary()
+                except ValueError as err:
+                    if str(err).startswith("UNIT_MISMATCH:"):
+                        errors["base"] = "unit_mismatch"
+                    else:
+                        errors["base"] = "db_error"
+                except Exception:
+                    errors["base"] = "db_error"
+            else:
+                errors["base"] = "not_confirmed"
+
+        warnings_text = "\n".join([f"- {w}" for w in warnings])
+        description_placeholders = {"warnings_text": warnings_text}
+
+        schema = vol.Schema(
+            {
+                vol.Required("confirm", default=False): selector.BooleanSelector()
+            }
+        )
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=schema,
+            description_placeholders=description_placeholders,
             errors=errors,
         )
 

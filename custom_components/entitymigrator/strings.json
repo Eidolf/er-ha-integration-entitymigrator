@@ -33,6 +33,13 @@
       "summary": {
         "title": "Migrations-Ergebnis",
         "description": "{summary_text}"
+      },
+      "confirm": {
+        "title": "Sicherheits-Bestätigung",
+        "description": "{warnings_text}",
+        "data": {
+          "confirm": "Ja, ich möchte die Migration trotz der Warnungen fortsetzen."
+        }
       }
     },
     "error": {
@@ -40,7 +47,8 @@
       "same_entity": "Alte und neue Entität dürfen nicht identisch sein.",
       "no_statistics": "Die ausgewählte alte Entität besitzt keine Langzeitstatistiken.",
       "no_device_entities": "Keine Entitäten für dieses Gerät gefunden.",
-      "unit_mismatch": "Die physikalischen Einheiten der Entitäten stimmen nicht überein. Bitte stelle sicher, dass beide dieselbe Einheit haben (z. B. Wh oder kWh)."
+      "unit_mismatch": "Die physikalischen Einheiten der Entitäten stimmen nicht überein. Bitte stelle sicher, dass beide dieselbe Einheit haben (z. B. Wh oder kWh).",
+      "not_confirmed": "Du musst die Sicherheits-Bestätigung aktivieren, um fortzufahren."
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"
