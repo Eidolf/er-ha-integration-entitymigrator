@@ -438,7 +438,7 @@ def check_migration_warnings(
                     ssl=influx_config.get("ssl", False)
                 )
                 for old_entity, new_entity in mappings:
-                    series_info, total_points = migrator.discover_series_and_counts(old_entity)
+                    series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
                     if total_points > 0:
                         warnings.append(
                             f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
