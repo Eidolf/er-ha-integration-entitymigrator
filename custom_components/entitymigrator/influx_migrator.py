@@ -40,25 +40,33 @@ class InfluxV1Migrator:
         """Execute an InfluxQL query."""
         url = f"{self.base_url}/query"
         params = {"db": self.database, "q": q}
+        resp = None
         try:
             resp = self.session.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            _LOGGER.error("InfluxDB query failed: %s (Query: %s)", e, q)
-            raise e
+            err_msg = str(e)
+            if resp is not None and resp.text:
+                err_msg = f"{e} - Details: {resp.text.strip()}"
+            _LOGGER.error("InfluxDB query failed: %s (Query: %s)", err_msg, q)
+            raise ValueError(err_msg) from e
 
     def write_lines(self, lines):
         """Write Line Protocol points to InfluxDB."""
         url = f"{self.base_url}/write"
         params = {"db": self.database, "precision": "ns"}
         data = "\n".join(lines) + "\n"
+        resp = None
         try:
             resp = self.session.post(url, params=params, data=data, timeout=120)
             resp.raise_for_status()
         except Exception as e:
-            _LOGGER.error("InfluxDB write failed: %s", e)
-            raise e
+            err_msg = str(e)
+            if resp is not None and resp.text:
+                err_msg = f"{e} - Details: {resp.text.strip()}"
+            _LOGGER.error("InfluxDB write failed: %s", err_msg)
+            raise ValueError(err_msg) from e
 
     def discover_series_and_counts(self, old_entity):
         """Find measurements containing the entity and count total data points."""
