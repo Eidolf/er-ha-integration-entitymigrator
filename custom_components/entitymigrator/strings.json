@@ -7,7 +7,8 @@
         "data": {
           "mode": "Migrationsmodus",
           "cutoff_date": "Schnittdatum & Uhrzeit",
-          "delete_old": "Alte Entitäten nach erfolgreicher Migration vollständig aus der Datenbank löschen."
+          "delete_old": "Alte Entitäten nach erfolgreicher Migration vollständig aus der Datenbank löschen.",
+          "influxdb_migrate": "Auch historische Daten in InfluxDB (v1) migrieren."
         }
       },
       "device": {
@@ -40,6 +41,18 @@
         "data": {
           "confirm": "Ja, ich möchte die Migration trotz der Warnungen fortsetzen."
         }
+      },
+      "influxdb": {
+        "title": "InfluxDB-Konfiguration",
+        "description": "Gib die Verbindungsdaten für deine InfluxDB v1 ein, um die historischen Daten ebenfalls zu migrieren.",
+        "data": {
+          "influx_host": "Host / IP-Adresse",
+          "influx_port": "Port",
+          "influx_database": "Datenbank-Name",
+          "influx_username": "Benutzername (optional)",
+          "influx_password": "Passwort (optional)",
+          "influx_ssl": "SSL-Verschlüsselung verwenden"
+        }
       }
     },
     "error": {
@@ -48,7 +61,8 @@
       "no_statistics": "Die ausgewählte alte Entität besitzt keine Langzeitstatistiken.",
       "no_device_entities": "Keine Entitäten für dieses Gerät gefunden.",
       "unit_mismatch": "Die physikalischen Einheiten der Entitäten stimmen nicht überein. Bitte stelle sicher, dass beide dieselbe Einheit haben (z. B. Wh oder kWh).",
-      "not_confirmed": "Du musst die Sicherheits-Bestätigung aktivieren, um fortzufahren."
+      "not_confirmed": "Du musst die Sicherheits-Bestätigung aktivieren, um fortzufahren.",
+      "influx_conn_error": "Verbindung zu InfluxDB fehlgeschlagen. Bitte überprüfe Host, Port und Zugangsdaten."
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"

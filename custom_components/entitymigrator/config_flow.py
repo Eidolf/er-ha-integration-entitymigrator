@@ -38,6 +38,7 @@ def run_db_migration(
     mappings: list[tuple[str, str]],
     cutoff_date_str: str,
     delete_old: bool,
+    influx_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the database migration transaction in the executor thread."""
     dt = dt_util.parse_datetime(cutoff_date_str)
@@ -326,6 +327,36 @@ def run_db_migration(
         elif has_states_any:
             result_summary["migration_type"] = "LTS & Kurzzeit-Zustände"
 
+        # 9. Optionally perform InfluxDB migration
+        if influx_config and success:
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                migrator = InfluxV1Migrator(
+                    host=influx_config["host"],
+                    port=influx_config["port"],
+                    database=influx_config["database"],
+                    username=influx_config.get("username"),
+                    password=influx_config.get("password"),
+                    ssl=influx_config.get("ssl", False),
+                )
+                
+                for old_entity, new_entity in mappings:
+                    res = migrator.migrate_entity_data(
+                        old_entity=old_entity,
+                        new_entity=new_entity,
+                        delete_old=delete_old
+                    )
+                    copied = res["copied"]
+                    deleted = res["deleted"]
+                    result_summary["details"].append(
+                        f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
+                        + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
+                    )
+                result_summary["migration_type"] = f"{result_summary['migration_type']} & InfluxDB"
+            except Exception as e:
+                _LOGGER.error("Fehler bei der InfluxDB-Migration: %s", e)
+                result_summary["details"].append(f"InfluxDB-Fehler: {e}")
+
         return result_summary
     except Exception as err:
         session.rollback()
@@ -337,6 +368,7 @@ def check_migration_warnings(
     hass: HomeAssistant,
     mappings: list[tuple[str, str]],
     cutoff_date_str: str,
+    influx_config: dict[str, Any] | None = None,
 ) -> list[str]:
     """Validate mappings before migrating to prevent accidental data loss/overwrite."""
     dt = dt_util.parse_datetime(cutoff_date_str)
@@ -393,6 +425,31 @@ def check_migration_warnings(
                         f"Die Ziel-Entität '{new_entity}' hat bereits {has_existing[0]} eigene Langzeitstatistiken "
                         "vor dem Cutoff-Datum. Diese werden bei der Migration überschrieben!"
                     )
+
+        if influx_config:
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                migrator = InfluxV1Migrator(
+                    host=influx_config["host"],
+                    port=influx_config["port"],
+                    database=influx_config["database"],
+                    username=influx_config.get("username"),
+                    password=influx_config.get("password"),
+                    ssl=influx_config.get("ssl", False)
+                )
+                for old_entity, new_entity in mappings:
+                    series_info, total_points = migrator.discover_series_and_counts(old_entity)
+                    if total_points > 0:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
+                            f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
+                        )
+                    else:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."
+                        )
+            except Exception as e:
+                warnings.append(f"InfluxDB-Fehler bei der Überprüfung: {e}")
     except Exception as e:
         _LOGGER.error("Fehler bei der Validierung der Migration: %s", e)
     finally:
@@ -417,7 +474,11 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.context["mode"] = user_input[CONF_MODE]
             self.context["cutoff_date"] = user_input[CONF_CUTOFF_DATE]
             self.context["delete_old"] = user_input.get(CONF_DELETE_OLD, False)
+            self.context["influxdb_migrate"] = user_input.get("influxdb_migrate", False)
             self.context["mappings"] = []
+
+            if self.context["influxdb_migrate"]:
+                return await self.async_step_influxdb()
 
             if user_input[CONF_MODE] == "device":
                 return await self.async_step_device()
@@ -449,12 +510,64 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Required(CONF_CUTOFF_DATE): selector.DateTimeSelector(),
                 vol.Optional(CONF_DELETE_OLD, default=False): selector.BooleanSelector(),
+                vol.Optional("influxdb_migrate", default=False): selector.BooleanSelector(),
             }
         )
 
         return self.async_show_form(
             step_id="user", data_schema=schema, errors=errors
         )
+    async def async_step_influxdb(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle InfluxDB v1 configuration inputs."""
+        errors = {}
+
+        if user_input is not None:
+            self.context["influx_config"] = {
+                "host": user_input["influx_host"],
+                "port": user_input["influx_port"],
+                "database": user_input["influx_database"],
+                "username": user_input.get("influx_username"),
+                "password": user_input.get("influx_password"),
+                "ssl": user_input.get("influx_ssl", False),
+            }
+
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                migrator = InfluxV1Migrator(
+                    host=user_input["influx_host"],
+                    port=user_input["influx_port"],
+                    database=user_input["influx_database"],
+                    username=user_input.get("influx_username"),
+                    password=user_input.get("influx_password"),
+                    ssl=user_input.get("influx_ssl", False)
+                )
+                await self.hass.async_add_executor_job(migrator.query, "SHOW MEASUREMENTS LIMIT 1")
+                
+                if self.context["mode"] == "device":
+                    return await self.async_step_device()
+                else:
+                    return await self.async_step_loop()
+            except Exception as e:
+                _LOGGER.error("InfluxDB connection test failed: %s", e)
+                errors["base"] = "influx_conn_error"
+
+        schema = vol.Schema(
+            {
+                vol.Required("influx_host", default="localhost"): str,
+                vol.Required("influx_port", default=8086): int,
+                vol.Required("influx_database", default="homeassistant"): str,
+                vol.Optional("influx_username"): str,
+                vol.Optional("influx_password"): str,
+                vol.Optional("influx_ssl", default=False): selector.BooleanSelector(),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="influxdb", data_schema=schema, errors=errors
+        )
+
 
     async def async_step_device(
         self, user_input: dict[str, Any] | None = None
@@ -565,6 +678,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.hass,
                         mappings,
                         self.context["cutoff_date"],
+                        self.context.get("influx_config"),
                     )
 
                     self.context["mappings"] = mappings
@@ -590,6 +704,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mappings,
                         self.context["cutoff_date"],
                         self.context["delete_old"],
+                        self.context.get("influx_config"),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
@@ -705,6 +820,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.hass,
                         self.context["mappings"],
                         self.context["cutoff_date"],
+                        self.context.get("influx_config"),
                     )
 
                     self.context["init_data"] = {
@@ -722,6 +838,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["mappings"],
                         self.context["cutoff_date"],
                         self.context["delete_old"],
+                        self.context.get("influx_config"),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
@@ -780,6 +897,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["mappings"],
                         self.context["cutoff_date"],
                         self.context["delete_old"],
+                        self.context.get("influx_config"),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
