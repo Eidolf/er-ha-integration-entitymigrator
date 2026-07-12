@@ -444,6 +444,11 @@ def check_migration_warnings(
                             f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
                             f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
                         )
+                    elif total_points == -1:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
+                            f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
+                        )
                     else:
                         warnings.append(
                             f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."

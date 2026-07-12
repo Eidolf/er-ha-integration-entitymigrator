@@ -20,12 +20,12 @@ class InfluxV1Migrator:
         if username and password:
             self.session.auth = (username, password)
 
-    def query(self, q):
+    def query(self, q, timeout=30):
         """Execute an InfluxQL query."""
         url = f"{self.base_url}/query"
         params = {"db": self.database, "q": q}
         try:
-            resp = self.session.get(url, params=params, timeout=30)
+            resp = self.session.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -38,7 +38,7 @@ class InfluxV1Migrator:
         params = {"db": self.database, "precision": "ns"}
         data = "\n".join(lines) + "\n"
         try:
-            resp = self.session.post(url, params=params, data=data, timeout=30)
+            resp = self.session.post(url, params=params, data=data, timeout=120)
             resp.raise_for_status()
         except Exception as e:
             _LOGGER.error("InfluxDB write failed: %s", e)
@@ -48,6 +48,7 @@ class InfluxV1Migrator:
         """Find measurements containing the entity and count total data points."""
         series_info = []
         total_points = 0
+        has_timeout = False
         
         # Try full entity ID first
         entity_to_query = old_entity
@@ -75,24 +76,33 @@ class InfluxV1Migrator:
 
         for measurement in sorted(list(measurements)):
             # Get count of points for this measurement
-            count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{entity_to_query}'"
-            count_res = self.query(count_q)
             count = 0
-            res_results = count_res.get("results", [])
-            if res_results and "series" in res_results[0]:
-                series_data = res_results[0]["series"][0]
-                # Find the value column index
-                val_idx = -1
-                for idx, col in enumerate(series_data.get("columns", [])):
-                    if col != "time":
-                        val_idx = idx
-                        break
-                if val_idx != -1 and series_data.get("values"):
-                    count = int(series_data["values"][0][val_idx])
+            try:
+                # Use a short timeout of 5 seconds for count checks to prevent UI freezing
+                count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{entity_to_query}'"
+                count_res = self.query(count_q, timeout=5)
+                res_results = count_res.get("results", [])
+                if res_results and "series" in res_results[0]:
+                    series_data = res_results[0]["series"][0]
+                    val_idx = -1
+                    for idx, col in enumerate(series_data.get("columns", [])):
+                        if col != "time":
+                            val_idx = idx
+                            break
+                    if val_idx != -1 and series_data.get("values"):
+                        count = int(series_data["values"][0][val_idx])
+            except Exception as e:
+                _LOGGER.warning("Could not count InfluxDB points for %s in %s (timeout/error): %s", entity_to_query, measurement, e)
+                count = -1
+                has_timeout = True
 
-            if count > 0:
+            if count != 0:
                 series_info.append({"measurement": measurement, "count": count})
-                total_points += count
+                if count > 0 and not has_timeout:
+                    total_points += count
+
+        if has_timeout:
+            total_points = -1
 
         return series_info, total_points, entity_to_query
 
