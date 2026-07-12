@@ -39,6 +39,7 @@ def run_db_migration(
     cutoff_date_str: str,
     delete_old: bool,
     influx_config: dict[str, Any] | None = None,
+    influxdb_only: bool = False,
 ) -> dict[str, Any]:
     """Run the database migration transaction in the executor thread."""
     dt = dt_util.parse_datetime(cutoff_date_str)
@@ -53,6 +54,36 @@ def run_db_migration(
         "deleted": "Nein",
         "details": [],
     }
+
+    if influxdb_only:
+        if influx_config:
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                migrator = InfluxV1Migrator(
+                    host=influx_config["host"],
+                    port=influx_config["port"],
+                    database=influx_config["database"],
+                    username=influx_config.get("username"),
+                    password=influx_config.get("password"),
+                    ssl=influx_config.get("ssl", False),
+                )
+                for old_entity, new_entity in mappings:
+                    res = migrator.migrate_entity_data(
+                        old_entity=old_entity,
+                        new_entity=new_entity,
+                        delete_old=delete_old
+                    )
+                    copied = res["copied"]
+                    deleted = res["deleted"]
+                    result_summary["details"].append(
+                        f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
+                        + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
+                    )
+                result_summary["migration_type"] = "Nur InfluxDB"
+            except Exception as e:
+                _LOGGER.error("Fehler bei der InfluxDB-Migration: %s", e)
+                result_summary["details"].append(f"InfluxDB-Fehler: {e}")
+        return result_summary
 
     session = get_instance(hass).get_session()
     try:
@@ -376,6 +407,7 @@ def check_migration_warnings(
     mappings: list[tuple[str, str]],
     cutoff_date_str: str,
     influx_config: dict[str, Any] | None = None,
+    influxdb_only: bool = False,
 ) -> list[str]:
     """Validate mappings before migrating to prevent accidental data loss/overwrite."""
     dt = dt_util.parse_datetime(cutoff_date_str)
@@ -384,88 +416,93 @@ def check_migration_warnings(
     dt = dt_util.as_utc(dt)
     ts = dt.timestamp()
 
-    session = get_instance(hass).get_session()
     warnings = []
-    try:
-        test_query = session.execute(text("SELECT * FROM statistics LIMIT 1"))
-        has_start_ts = "start_ts" in test_query.keys()
-        time_col = "start_ts" if has_start_ts else "start"
-        time_val = ts if has_start_ts else dt
 
-        for old_entity, new_entity in mappings:
-            # 1. Check if old_entity statistics exist or count is 0
-            old_meta = session.execute(
-                text("SELECT id FROM statistics_meta WHERE statistic_id = :old"),
-                {"old": old_entity}
-            ).fetchone()
-            
-            if not old_meta:
-                warnings.append(
-                    f"Die Quell-Entität '{old_entity}' hat keine Statistiken in der Datenbank. "
-                    "Sie wurde eventuell bereits migriert."
-                )
-            else:
-                old_meta_id = old_meta[0]
-                count_row = session.execute(
-                    text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :old_id"),
-                    {"old_id": old_meta_id}
+    if not influxdb_only:
+        session = get_instance(hass).get_session()
+        try:
+            test_query = session.execute(text("SELECT * FROM statistics LIMIT 1"))
+            has_start_ts = "start_ts" in test_query.keys()
+            time_col = "start_ts" if has_start_ts else "start"
+            time_val = ts if has_start_ts else dt
+
+            for old_entity, new_entity in mappings:
+                # 1. Check if old_entity statistics exist or count is 0
+                old_meta = session.execute(
+                    text("SELECT id FROM statistics_meta WHERE statistic_id = :old"),
+                    {"old": old_entity}
                 ).fetchone()
-                if not count_row or count_row[0] == 0:
+                
+                if not old_meta:
                     warnings.append(
-                        f"Die Quell-Entität '{old_entity}' hat 0 Statistik-Einträge in der Datenbank. "
+                        f"Die Quell-Entität '{old_entity}' hat keine Statistiken in der Datenbank. "
                         "Sie wurde eventuell bereits migriert."
                     )
+                else:
+                    old_meta_id = old_meta[0]
+                    count_row = session.execute(
+                        text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :old_id"),
+                        {"old_id": old_meta_id}
+                    ).fetchone()
+                    if not count_row or count_row[0] == 0:
+                        warnings.append(
+                            f"Die Quell-Entität '{old_entity}' hat 0 Statistik-Einträge in der Datenbank. "
+                            "Sie wurde eventuell bereits migriert."
+                        )
 
-            # 2. Check if new_entity already has statistics prior to cutoff (potential overwrite)
-            new_meta = session.execute(
-                text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
-                {"new": new_entity}
-            ).fetchone()
-            if new_meta:
-                new_meta_id = new_meta[0]
-                has_existing = session.execute(
-                    text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
-                    {"new_id": new_meta_id, "time_val": time_val}
+                # 2. Check if new_entity already has statistics prior to cutoff (potential overwrite)
+                new_meta = session.execute(
+                    text("SELECT id FROM statistics_meta WHERE statistic_id = :new"),
+                    {"new": new_entity}
                 ).fetchone()
-                if has_existing and has_existing[0] > 0:
-                    warnings.append(
-                        f"Die Ziel-Entität '{new_entity}' hat bereits {has_existing[0]} eigene Langzeitstatistiken "
-                        "vor dem Cutoff-Datum. Diese werden bei der Migration überschrieben!"
-                    )
-
-        if influx_config:
+                if new_meta:
+                    new_meta_id = new_meta[0]
+                    has_existing = session.execute(
+                        text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :new_id AND {time_col} < :time_val"),
+                        {"new_id": new_meta_id, "time_val": time_val}
+                    ).fetchone()
+                    if has_existing and has_existing[0] > 0:
+                        warnings.append(
+                            f"Die Ziel-Entität '{new_entity}' hat bereits {has_existing[0]} eigene Langzeitstatistiken "
+                            "vor dem Cutoff-Datum. Diese werden bei der Migration überschrieben!"
+                        )
+        except Exception as e:
+            _LOGGER.error("Fehler bei der Validierung der Migration (SQL): %s", e)
+        finally:
             try:
-                from .influx_migrator import InfluxV1Migrator
-                migrator = InfluxV1Migrator(
-                    host=influx_config["host"],
-                    port=influx_config["port"],
-                    database=influx_config["database"],
-                    username=influx_config.get("username"),
-                    password=influx_config.get("password"),
-                    ssl=influx_config.get("ssl", False)
-                )
-                for old_entity, new_entity in mappings:
-                    series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
-                    if total_points > 0:
-                        warnings.append(
-                            f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
-                            f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
-                        )
-                    elif total_points == -1:
-                        warnings.append(
-                            f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
-                            f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
-                        )
-                    else:
-                        warnings.append(
-                            f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."
-                        )
-            except Exception as e:
-                warnings.append(f"InfluxDB-Fehler bei der Überprüfung: {e}")
-    except Exception as e:
-        _LOGGER.error("Fehler bei der Validierung der Migration: %s", e)
-    finally:
-        session.close()
+                session.close()
+            except Exception:
+                pass
+
+    if influx_config:
+        try:
+            from .influx_migrator import InfluxV1Migrator
+            migrator = InfluxV1Migrator(
+                host=influx_config["host"],
+                port=influx_config["port"],
+                database=influx_config["database"],
+                username=influx_config.get("username"),
+                password=influx_config.get("password"),
+                ssl=influx_config.get("ssl", False)
+            )
+            for old_entity, new_entity in mappings:
+                series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
+                if total_points > 0:
+                    warnings.append(
+                        f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
+                        f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
+                    )
+                elif total_points == -1:
+                    warnings.append(
+                        f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
+                        f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
+                    )
+                else:
+                    warnings.append(
+                        f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."
+                    )
+        except Exception as e:
+            warnings.append(f"InfluxDB-Fehler bei der Überprüfung: {e}")
     return warnings
 
 
@@ -487,7 +524,12 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.context["cutoff_date"] = user_input[CONF_CUTOFF_DATE]
             self.context["delete_old"] = user_input.get(CONF_DELETE_OLD, False)
             self.context["influxdb_migrate"] = user_input.get("influxdb_migrate", False)
+            self.context["influxdb_only"] = user_input.get("influxdb_only", False)
             self.context["mappings"] = []
+
+            # If influxdb_only is True, force influxdb_migrate to be True
+            if self.context["influxdb_only"]:
+                self.context["influxdb_migrate"] = True
 
             if self.context["influxdb_migrate"]:
                 return await self.async_step_influxdb()
@@ -523,6 +565,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_CUTOFF_DATE): selector.DateTimeSelector(),
                 vol.Optional(CONF_DELETE_OLD, default=False): selector.BooleanSelector(),
                 vol.Optional("influxdb_migrate", default=False): selector.BooleanSelector(),
+                vol.Optional("influxdb_only", default=False): selector.BooleanSelector(),
             }
         )
 
@@ -691,6 +734,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mappings,
                         self.context["cutoff_date"],
                         self.context.get("influx_config"),
+                        self.context.get("influxdb_only", False),
                     )
 
                     self.context["mappings"] = mappings
@@ -717,6 +761,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["cutoff_date"],
                         self.context["delete_old"],
                         self.context.get("influx_config"),
+                        self.context.get("influxdb_only", False),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
@@ -833,6 +878,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["mappings"],
                         self.context["cutoff_date"],
                         self.context.get("influx_config"),
+                        self.context.get("influxdb_only", False),
                     )
 
                     self.context["init_data"] = {
@@ -851,6 +897,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["cutoff_date"],
                         self.context["delete_old"],
                         self.context.get("influx_config"),
+                        self.context.get("influxdb_only", False),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()
@@ -910,6 +957,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["cutoff_date"],
                         self.context["delete_old"],
                         self.context.get("influx_config"),
+                        self.context.get("influxdb_only", False),
                     )
                     self.context["migration_result"] = summary
                     return await self.async_step_summary()

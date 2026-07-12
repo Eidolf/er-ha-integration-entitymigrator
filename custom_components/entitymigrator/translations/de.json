@@ -8,7 +8,8 @@
           "mode": "Migrationsmodus",
           "cutoff_date": "Schnittdatum & Uhrzeit",
           "delete_old": "Alte Entitäten nach erfolgreicher Migration vollständig aus der Datenbank löschen.",
-          "influxdb_migrate": "Auch historische Daten in InfluxDB (v1) migrieren."
+          "influxdb_migrate": "Auch historische Daten in InfluxDB (v1) migrieren.",
+          "influxdb_only": "Nur InfluxDB migrieren (lokale SQL-Statistiken überspringen)."
         }
       },
       "device": {
