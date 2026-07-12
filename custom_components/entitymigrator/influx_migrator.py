@@ -20,6 +20,22 @@ class InfluxV1Migrator:
         if username and password:
             self.session.auth = (username, password)
 
+    def ping(self):
+        """Ping the InfluxDB server to test connection."""
+        url = f"{self.base_url}/ping"
+        try:
+            resp = self.session.get(url, timeout=10)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            _LOGGER.error("InfluxDB ping failed: %s", e)
+            raise e
+
+    def test_connection(self):
+        """Test connection, auth, and database existence."""
+        self.ping()
+        self.query("SHOW RETENTION POLICIES", timeout=30)
+
     def query(self, q, timeout=30):
         """Execute an InfluxQL query."""
         url = f"{self.base_url}/query"

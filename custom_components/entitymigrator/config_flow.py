@@ -598,9 +598,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     password=user_input.get("influx_password"),
                     ssl=user_input.get("influx_ssl", False)
                 )
-                await self.hass.async_add_executor_job(
-                    lambda: migrator.query("SHOW RETENTION POLICIES", timeout=10)
-                )
+                await self.hass.async_add_executor_job(migrator.test_connection)
                 
                 if self.context["mode"] == "device":
                     return await self.async_step_device()
