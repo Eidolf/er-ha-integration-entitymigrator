@@ -973,6 +973,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "not_confirmed"
 
         warnings_text = "\n\n".join([f"⚠️ {w}" for w in warnings])
+        warnings_text = warnings_text.replace("%", "%%")
         description_placeholders = {"warnings_text": warnings_text}
 
         schema = vol.Schema(
@@ -1044,6 +1045,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             f"{details_text}\n\n"
             f"Klicke auf 'Absenden' (Fertigstellen), um die Konfiguration abzuschließen."
         )
+        summary_text = summary_text.replace("%", "%%")
 
         return self.async_show_form(
             step_id="summary",
