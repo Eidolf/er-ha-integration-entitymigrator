@@ -87,46 +87,66 @@ class InfluxV1Migrator:
         total_points = 0
         has_timeout = False
         
-        # Try full entity ID first
-        entity_to_query = old_entity
-        q = f"SHOW SERIES FROM /.*/ WHERE \"entity_id\" = '{entity_to_query}'"
-        result = self.query(q, timeout=120)
-        _LOGGER.info("InfluxDB SHOW SERIES for '%s' returned: %s", entity_to_query, result)
-        
-        measurements = set()
-        results = result.get("results", [])
-        has_series = results and "series" in results[0]
-        
-        # If no series found and there is a dot, try stripped entity ID (object ID only)
-        if not has_series and "." in old_entity:
-            entity_to_query = old_entity.split(".", 1)[1]
-            q = f"SHOW SERIES FROM /.*/ WHERE \"entity_id\" = '{entity_to_query}'"
-            result = self.query(q, timeout=120)
-            _LOGGER.info("InfluxDB SHOW SERIES (stripped) for '%s' returned: %s", entity_to_query, result)
-            results = result.get("results", [])
-            has_series = results and "series" in results[0]
+        # 1. Fetch all measurements in the database (metadata query, very fast)
+        try:
+            meas_res = self.query("SHOW MEASUREMENTS", timeout=30)
+            results = meas_res.get("results", [])
+            measurements_in_db = []
+            if results and "series" in results[0]:
+                for val in results[0]["series"][0].get("values", []):
+                    measurements_in_db.append(val[0])
+        except Exception as e:
+            _LOGGER.warning("Could not fetch measurements: %s", e)
+            measurements_in_db = []
 
-        if has_series:
-            for series in results[0]["series"]:
-                for val in series.get("values", []):
-                    series_str = val[0]
-                    part0 = series_str.split(",")[0]
-                    if "." in part0:
-                        parts = part0.split(".", 1)
-                        rp = parts[0].strip('"')
-                        meas = parts[1].strip('"')
-                        quoted_name = f'"{rp}"."{meas}"'
-                    else:
-                        meas = part0.strip('"')
-                        quoted_name = f'"{meas}"'
-                    measurements.add(quoted_name)
+        # Fallback to standard Home Assistant measurements if list is empty
+        if not measurements_in_db:
+            measurements_in_db = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
 
-        for measurement in sorted(list(measurements)):
-            # Get count of points for this measurement
+        # 2. Query series scoped to each measurement (extremely fast index lookups)
+        measurements_found = set()
+        resolved_tag = old_entity
+        
+        candidates = [old_entity]
+        if "." in old_entity:
+            candidates.append(old_entity.split(".", 1)[1])
+            
+        for entity_to_try in candidates:
+            has_series_for_tag = False
+            for meas in measurements_in_db:
+                quoted_meas = f'"{meas}"'
+                q = f"SHOW SERIES FROM {quoted_meas} WHERE \"entity_id\" = '{entity_to_try}'"
+                try:
+                    result = self.query(q, timeout=10)
+                    results = result.get("results", [])
+                    if results and "series" in results[0]:
+                        for series in results[0]["series"]:
+                            for val in series.get("values", []):
+                                series_str = val[0]
+                                part0 = series_str.split(",")[0]
+                                if "." in part0:
+                                    parts = part0.split(".", 1)
+                                    rp = parts[0].strip('"')
+                                    m_name = parts[1].strip('"')
+                                    quoted_name = f'"{rp}"."{m_name}"'
+                                else:
+                                    m_name = part0.strip('"')
+                                    quoted_name = f'"{m_name}"'
+                                measurements_found.add(quoted_name)
+                        has_series_for_tag = True
+                except Exception as e:
+                    _LOGGER.warning("SHOW SERIES query failed for %s in %s: %s", entity_to_try, meas, e)
+            
+            if has_series_for_tag:
+                resolved_tag = entity_to_try
+                break
+
+        # 3. For each measurement found, get count of points
+        for measurement in sorted(list(measurements_found)):
             count = 0
             try:
                 # Use a timeout of 15 seconds for count checks
-                count_q = f"SELECT COUNT(*) FROM {measurement} WHERE \"entity_id\" = '{entity_to_query}'"
+                count_q = f"SELECT COUNT(*) FROM {measurement} WHERE \"entity_id\" = '{resolved_tag}'"
                 count_res = self.query(count_q, timeout=15)
                 res_results = count_res.get("results", [])
                 if res_results and "series" in res_results[0]:
@@ -141,7 +161,7 @@ class InfluxV1Migrator:
                         if raw_val is not None:
                             count = int(raw_val)
             except Exception as e:
-                _LOGGER.warning("Could not count InfluxDB points for %s in %s (timeout/error): %s", entity_to_query, measurement, e)
+                _LOGGER.warning("Could not count InfluxDB points for %s in %s (timeout/error): %s", resolved_tag, measurement, e)
                 count = -1
                 has_timeout = True
 
@@ -153,7 +173,7 @@ class InfluxV1Migrator:
         if has_timeout:
             total_points = -1
 
-        return series_info, total_points, entity_to_query
+        return series_info, total_points, resolved_tag
 
     def migrate_entity_data(self, old_entity, new_entity, delete_old=False, progress_callback=None):
         """Read points of old_entity, update tag to new_entity, write back, and optionally delete old."""
