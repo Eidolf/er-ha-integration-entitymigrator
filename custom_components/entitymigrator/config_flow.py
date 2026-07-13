@@ -59,26 +59,26 @@ def run_db_migration(
         if influx_config:
             try:
                 from .influx_migrator import InfluxV1Migrator
-                migrator = InfluxV1Migrator(
+                with InfluxV1Migrator(
                     host=influx_config["host"],
                     port=influx_config["port"],
                     database=influx_config["database"],
                     username=influx_config.get("username"),
                     password=influx_config.get("password"),
                     ssl=influx_config.get("ssl", False),
-                )
-                for old_entity, new_entity in mappings:
-                    res = migrator.migrate_entity_data(
-                        old_entity=old_entity,
-                        new_entity=new_entity,
-                        delete_old=delete_old
-                    )
-                    copied = res["copied"]
-                    deleted = res["deleted"]
-                    result_summary["details"].append(
-                        f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
-                        + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
-                    )
+                ) as migrator:
+                    for old_entity, new_entity in mappings:
+                        res = migrator.migrate_entity_data(
+                            old_entity=old_entity,
+                            new_entity=new_entity,
+                            delete_old=delete_old
+                        )
+                        copied = res["copied"]
+                        deleted = res["deleted"]
+                        result_summary["details"].append(
+                            f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
+                            + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
+                        )
                 result_summary["migration_type"] = "Nur InfluxDB"
             except Exception as e:
                 _LOGGER.error("Fehler bei der InfluxDB-Migration: %s", e)
@@ -363,27 +363,26 @@ def run_db_migration(
         if influx_config and success:
             try:
                 from .influx_migrator import InfluxV1Migrator
-                migrator = InfluxV1Migrator(
+                with InfluxV1Migrator(
                     host=influx_config["host"],
                     port=influx_config["port"],
                     database=influx_config["database"],
                     username=influx_config.get("username"),
                     password=influx_config.get("password"),
                     ssl=influx_config.get("ssl", False),
-                )
-                
-                for old_entity, new_entity in mappings:
-                    res = migrator.migrate_entity_data(
-                        old_entity=old_entity,
-                        new_entity=new_entity,
-                        delete_old=delete_old
-                    )
-                    copied = res["copied"]
-                    deleted = res["deleted"]
-                    result_summary["details"].append(
-                        f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
-                        + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
-                    )
+                ) as migrator:
+                    for old_entity, new_entity in mappings:
+                        res = migrator.migrate_entity_data(
+                            old_entity=old_entity,
+                            new_entity=new_entity,
+                            delete_old=delete_old
+                        )
+                        copied = res["copied"]
+                        deleted = res["deleted"]
+                        result_summary["details"].append(
+                            f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
+                            + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
+                        )
                 result_summary["migration_type"] = f"{result_summary['migration_type']} & InfluxDB"
             except Exception as e:
                 _LOGGER.error("Fehler bei der InfluxDB-Migration: %s", e)
@@ -477,30 +476,30 @@ def check_migration_warnings(
     if influx_config:
         try:
             from .influx_migrator import InfluxV1Migrator
-            migrator = InfluxV1Migrator(
+            with InfluxV1Migrator(
                 host=influx_config["host"],
                 port=influx_config["port"],
                 database=influx_config["database"],
                 username=influx_config.get("username"),
                 password=influx_config.get("password"),
                 ssl=influx_config.get("ssl", False)
-            )
-            for old_entity, new_entity in mappings:
-                series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
-                if total_points > 0:
-                    warnings.append(
-                        f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
-                        f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
-                    )
-                elif total_points == -1:
-                    warnings.append(
-                        f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
-                        f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
-                    )
-                else:
-                    warnings.append(
-                        f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."
-                    )
+            ) as migrator:
+                for old_entity, new_entity in mappings:
+                    series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
+                    if total_points > 0:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
+                            f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
+                        )
+                    elif total_points == -1:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
+                            f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
+                        )
+                    else:
+                        warnings.append(
+                            f"InfluxDB: Für '{old_entity}' wurden keine historischen Datenpunkte gefunden."
+                        )
         except Exception as e:
             warnings.append(f"InfluxDB-Fehler bei der Überprüfung: {e}")
     return warnings
@@ -590,15 +589,15 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             try:
                 from .influx_migrator import InfluxV1Migrator
-                migrator = InfluxV1Migrator(
+                with InfluxV1Migrator(
                     host=user_input["influx_host"],
                     port=user_input["influx_port"],
                     database=user_input["influx_database"],
                     username=user_input.get("influx_username"),
                     password=user_input.get("influx_password"),
                     ssl=user_input.get("influx_ssl", False)
-                )
-                await self.hass.async_add_executor_job(migrator.test_connection)
+                ) as migrator:
+                    await self.hass.async_add_executor_job(migrator.test_connection)
                 
                 if self.context["mode"] == "device":
                     return await self.async_step_device()
@@ -1092,15 +1091,15 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
             try:
                 # Test connection
                 from .influx_migrator import InfluxV1Migrator
-                migrator = InfluxV1Migrator(
+                with InfluxV1Migrator(
                     host=new_influx_config["host"],
                     port=new_influx_config["port"],
                     database=new_influx_config["database"],
                     username=new_influx_config.get("username"),
                     password=new_influx_config.get("password"),
                     ssl=new_influx_config.get("ssl", False),
-                )
-                await self.hass.async_add_executor_job(migrator.test_connection)
+                ) as migrator:
+                    await self.hass.async_add_executor_job(migrator.test_connection)
 
                 # Run InfluxDB migration again (InfluxDB-only mode)
                 summary = await self.hass.async_add_executor_job(

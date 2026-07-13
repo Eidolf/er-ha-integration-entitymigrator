@@ -20,6 +20,19 @@ class InfluxV1Migrator:
         if username and password:
             self.session.auth = (username, password)
 
+    def close(self):
+        """Close the HTTP session to release resources and file descriptors."""
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
     def ping(self):
         """Ping the InfluxDB server to test connection."""
         url = f"{self.base_url}/ping"
