@@ -68,5 +68,25 @@
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "InfluxDB-Migration wiederholen",
+        "description": "Hier kannst du die InfluxDB-Migration für diesen Eintrag noch einmal ausführen oder anpassen.",
+        "data": {
+          "influx_host": "Host / IP-Adresse",
+          "influx_port": "Port",
+          "influx_database": "Datenbank-Name",
+          "influx_username": "Benutzername (optional)",
+          "influx_password": "Passwort (optional)",
+          "influx_ssl": "SSL-Verschlüsselung verwenden"
+        }
+      },
+      "summary_options": {
+        "title": "Ergebnis",
+        "description": "{summary_text}"
+      }
+    }
   }
 }

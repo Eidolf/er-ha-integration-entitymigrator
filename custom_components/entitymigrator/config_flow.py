@@ -995,24 +995,36 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             init_data = self.context.get("init_data", {})
             mappings = self.context.get("mappings", [])
 
-            if len(mappings) == 1:
-                old_ent, new_ent = mappings[0]
-                old_clean = old_ent.split(".", 1)[1] if "." in old_ent else old_ent
-                new_clean = new_ent.split(".", 1)[1] if "." in new_ent else new_ent
-                title = f"{old_clean} -> {new_clean}"
-            elif len(mappings) > 1:
-                mapped_strs = []
-                for old_ent, new_ent in mappings[:2]:
+            # Save full migration context for options flow/recovery
+            init_data["mappings"] = mappings
+            init_data["cutoff_date"] = self.context.get("cutoff_date")
+            init_data["delete_old"] = self.context.get("delete_old", False)
+            init_data["influx_config"] = self.context.get("influx_config")
+            init_data["influxdb_only"] = self.context.get("influxdb_only", False)
+
+            title = "Device Migration"
+            try:
+                if len(mappings) == 1:
+                    old_ent, new_ent = mappings[0]
                     old_clean = old_ent.split(".", 1)[1] if "." in old_ent else old_ent
                     new_clean = new_ent.split(".", 1)[1] if "." in new_ent else new_ent
-                    mapped_strs.append(f"{old_clean}->{new_clean}")
-                title = ", ".join(mapped_strs)
-                if len(mappings) > 2:
-                    title += f" ... (+{len(mappings) - 2})"
-            else:
-                old_entity = init_data.get(CONF_OLD_ENTITY_ID)
-                new_entity = init_data.get(CONF_NEW_ENTITY_ID)
-                title = f"{old_entity} -> {new_entity}"
+                    title = f"{old_clean} -> {new_clean}"
+                elif len(mappings) > 1:
+                    mapped_strs = []
+                    for old_ent, new_ent in mappings[:2]:
+                        old_clean = old_ent.split(".", 1)[1] if "." in old_ent else old_ent
+                        new_clean = new_ent.split(".", 1)[1] if "." in new_ent else new_ent
+                        mapped_strs.append(f"{old_clean}->{new_clean}")
+                    title = ", ".join(mapped_strs)
+                    if len(mappings) > 2:
+                        title += f" ... (+{len(mappings) - 2})"
+                else:
+                    old_entity = init_data.get(CONF_OLD_ENTITY_ID)
+                    new_entity = init_data.get(CONF_NEW_ENTITY_ID)
+                    if old_entity and new_entity:
+                        title = f"{old_entity} -> {new_entity}"
+            except Exception as e:
+                _LOGGER.error("Error generating title: %s", e)
 
             return self.async_create_entry(
                 title=f"Migration: {title}",
@@ -1034,6 +1046,113 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="summary",
+            description_placeholders={"summary_text": summary_text},
+            data_schema=vol.Schema({}),
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow."""
+        return EntityMigratorOptionsFlowHandler(config_entry)
+
+
+class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for Entity Statistics Migrator."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        errors = {}
+        
+        # Get existing mappings and config from entry data
+        entry_data = self.config_entry.data
+        mappings = entry_data.get("mappings", [])
+        cutoff_date = entry_data.get("cutoff_date")
+        delete_old = entry_data.get("delete_old", False)
+        influx_config = entry_data.get("influx_config") or {}
+
+        if user_input is not None:
+            new_influx_config = {
+                "host": user_input["influx_host"],
+                "port": user_input["influx_port"],
+                "database": user_input["influx_database"],
+                "username": user_input.get("influx_username"),
+                "password": user_input.get("influx_password"),
+                "ssl": user_input.get("influx_ssl", False),
+            }
+
+            try:
+                # Test connection
+                from .influx_migrator import InfluxV1Migrator
+                migrator = InfluxV1Migrator(
+                    host=new_influx_config["host"],
+                    port=new_influx_config["port"],
+                    database=new_influx_config["database"],
+                    username=new_influx_config.get("username"),
+                    password=new_influx_config.get("password"),
+                    ssl=new_influx_config.get("ssl", False),
+                )
+                await self.hass.async_add_executor_job(migrator.test_connection)
+
+                # Run InfluxDB migration again (InfluxDB-only mode)
+                summary = await self.hass.async_add_executor_job(
+                    run_db_migration,
+                    self.hass,
+                    mappings,
+                    cutoff_date,
+                    delete_old,
+                    new_influx_config,
+                    True, # influxdb_only = True
+                )
+                
+                # Save new influx config into config entry data
+                new_data = dict(self.config_entry.data)
+                new_data["influx_config"] = new_influx_config
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+
+                # Show results in a form
+                summary_text = "\n".join([f"- {d}" for d in summary.get("details", [])])
+                self.context["summary_text"] = f"**Optionen erfolgreich angewendet!**\n\n{summary_text}"
+                return await self.async_step_summary_options()
+            except Exception as e:
+                _LOGGER.error("InfluxDB options migration failed: %s", e)
+                errors["base"] = "influx_conn_error"
+
+        schema = vol.Schema(
+            {
+                vol.Required("influx_host", default=influx_config.get("host", "localhost")): str,
+                vol.Required("influx_port", default=influx_config.get("port", 8086)): int,
+                vol.Required("influx_database", default=influx_config.get("database", "homeassistant")): str,
+                vol.Optional("influx_username", default=influx_config.get("username", "")): str,
+                vol.Optional("influx_password", default=influx_config.get("password", "")): str,
+                vol.Optional("influx_ssl", default=influx_config.get("ssl", False)): selector.BooleanSelector(),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init", data_schema=schema, errors=errors
+        )
+
+    async def async_step_summary_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Finished summary page for options flow."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data={})
+
+        summary_text = self.context.get("summary_text", "")
+        return self.async_show_form(
+            step_id="summary_options",
             description_placeholders={"summary_text": summary_text},
             data_schema=vol.Schema({}),
         )

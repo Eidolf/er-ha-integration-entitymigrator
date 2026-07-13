@@ -68,5 +68,25 @@
     "abort": {
       "already_configured": "Device is already configured"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Retry InfluxDB Migration",
+        "description": "Here you can run the InfluxDB migration again for this entry or modify settings.",
+        "data": {
+          "influx_host": "Host / IP Address",
+          "influx_port": "Port",
+          "influx_database": "Database Name",
+          "influx_username": "Username (optional)",
+          "influx_password": "Password (optional)",
+          "influx_ssl": "Use SSL encryption"
+        }
+      },
+      "summary_options": {
+        "title": "Result",
+        "description": "{summary_text}"
+      }
+    }
   }
 }
