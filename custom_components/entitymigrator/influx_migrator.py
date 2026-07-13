@@ -78,6 +78,7 @@ class InfluxV1Migrator:
         entity_to_query = old_entity
         q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
         result = self.query(q, timeout=120)
+        _LOGGER.info("InfluxDB SHOW SERIES for '%s' returned: %s", entity_to_query, result)
         
         measurements = set()
         results = result.get("results", [])
@@ -88,6 +89,7 @@ class InfluxV1Migrator:
             entity_to_query = old_entity.split(".", 1)[1]
             q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
             result = self.query(q, timeout=120)
+            _LOGGER.info("InfluxDB SHOW SERIES (stripped) for '%s' returned: %s", entity_to_query, result)
             results = result.get("results", [])
             has_series = results and "series" in results[0]
 
