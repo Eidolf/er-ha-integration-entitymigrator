@@ -117,9 +117,9 @@ class InfluxV1Migrator:
             # Get count of points for this measurement
             count = 0
             try:
-                # Use a short timeout of 5 seconds for count checks to prevent UI freezing
+                # Use a timeout of 15 seconds for count checks
                 count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{entity_to_query}'"
-                count_res = self.query(count_q, timeout=5)
+                count_res = self.query(count_q, timeout=15)
                 res_results = count_res.get("results", [])
                 if res_results and "series" in res_results[0]:
                     series_data = res_results[0]["series"][0]
@@ -188,7 +188,7 @@ class InfluxV1Migrator:
             offset = 0
             while True:
                 q = f"SELECT * FROM \"{measurement}\" WHERE \"entity_id\" = '{resolved_old_tag}' LIMIT {chunk_size} OFFSET {offset}"
-                data_res = self.query(q)
+                data_res = self.query(q, timeout=120)
                 
                 results = data_res.get("results", [])
                 if not results or "series" not in results[0]:
