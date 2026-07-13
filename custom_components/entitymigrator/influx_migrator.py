@@ -110,15 +110,23 @@ class InfluxV1Migrator:
             for series in results[0]["series"]:
                 for val in series.get("values", []):
                     series_str = val[0]
-                    measurement = series_str.split(",")[0]
-                    measurements.add(measurement)
+                    part0 = series_str.split(",")[0]
+                    if "." in part0:
+                        parts = part0.split(".", 1)
+                        rp = parts[0].strip('"')
+                        meas = parts[1].strip('"')
+                        quoted_name = f'"{rp}"."{meas}"'
+                    else:
+                        meas = part0.strip('"')
+                        quoted_name = f'"{meas}"'
+                    measurements.add(quoted_name)
 
         for measurement in sorted(list(measurements)):
             # Get count of points for this measurement
             count = 0
             try:
                 # Use a timeout of 15 seconds for count checks
-                count_q = f"SELECT COUNT(*) FROM \"{measurement}\" WHERE \"entity_id\" = '{entity_to_query}'"
+                count_q = f"SELECT COUNT(*) FROM {measurement} WHERE \"entity_id\" = '{entity_to_query}'"
                 count_res = self.query(count_q, timeout=15)
                 res_results = count_res.get("results", [])
                 if res_results and "series" in res_results[0]:
@@ -167,14 +175,14 @@ class InfluxV1Migrator:
             
             # 1. Discover Tag Keys and Field Keys to correctly parse them later
             tag_keys = set()
-            tag_res = self.query(f"SHOW TAG KEYS FROM \"{measurement}\"")
+            tag_res = self.query(f"SHOW TAG KEYS FROM {measurement}")
             results = tag_res.get("results", [])
             if results and "series" in results[0]:
                 for val in results[0]["series"][0].get("values", []):
                     tag_keys.add(val[0])
             
             field_keys = set()
-            field_res = self.query(f"SHOW FIELD KEYS FROM \"{measurement}\"")
+            field_res = self.query(f"SHOW FIELD KEYS FROM {measurement}")
             results = field_res.get("results", [])
             if results and "series" in results[0]:
                 for val in results[0]["series"][0].get("values", []):
@@ -187,7 +195,7 @@ class InfluxV1Migrator:
             chunk_size = 5000
             offset = 0
             while True:
-                q = f"SELECT * FROM \"{measurement}\" WHERE \"entity_id\" = '{resolved_old_tag}' LIMIT {chunk_size} OFFSET {offset}"
+                q = f"SELECT * FROM {measurement} WHERE \"entity_id\" = '{resolved_old_tag}' LIMIT {chunk_size} OFFSET {offset}"
                 data_res = self.query(q, timeout=120)
                 
                 results = data_res.get("results", [])
@@ -261,8 +269,15 @@ class InfluxV1Migrator:
                         # Format fields: comma separated k=v
                         field_str = ",".join([f"{k}={v}" for k, v in fields.items()])
                         
-                        # Escaped measurement name
-                        meas_name = measurement.replace(" ", "\\ ").replace(",", "\\,")
+                        # Escaped raw measurement name (without retention policy)
+                        raw_meas = measurement
+                        if "." in measurement:
+                            parts = measurement.split(".", 1)
+                            raw_meas = parts[1].strip('"')
+                        else:
+                            raw_meas = measurement.strip('"')
+                        
+                        meas_name = raw_meas.replace(" ", "\\ ").replace(",", "\\,")
                         
                         line = f"{meas_name}{tag_str} {field_str} {ns_timestamp}"
                         lines_to_write.append(line)
@@ -279,7 +294,7 @@ class InfluxV1Migrator:
 
             # 3. Optionally delete the old data from this measurement
             if delete_old and copied_count > 0:
-                del_q = f"DELETE FROM \"{measurement}\" WHERE \"entity_id\" = '{resolved_old_tag}'"
+                del_q = f"DELETE FROM {measurement} WHERE \"entity_id\" = '{resolved_old_tag}'"
                 self.query(del_q)
                 deleted_count += s["count"]
 
