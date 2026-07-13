@@ -96,7 +96,7 @@ def run_db_migration(
         has_lts_any = False
         has_states_any = False
 
-        max_attempts = 5
+        max_attempts = 10
         success = False
         last_err = None
 
@@ -104,7 +104,7 @@ def run_db_migration(
             try:
                 session.rollback()
                 if session.bind.dialect.name == "sqlite":
-                    session.execute(text("PRAGMA busy_timeout = 10000"))
+                    session.execute(text("PRAGMA busy_timeout = 30000"))
                     session.execute(text("BEGIN IMMEDIATE"))
 
                 result_summary["details"] = []
@@ -340,11 +340,13 @@ def run_db_migration(
                 session.rollback()
                 err_str = str(err).lower()
                 if "locked" in err_str or "busy" in err_str or "database is locked" in err_str:
+                    import random
+                    sleep_time = random.uniform(2.0, 5.0)
                     _LOGGER.warning(
-                        "Database locked during migration. Retrying in 2.0 seconds... (Attempt %s/%s)",
-                        attempt + 1, max_attempts
+                        "Database locked during migration. Retrying in %.1f seconds... (Attempt %s/%s)",
+                        sleep_time, attempt + 1, max_attempts
                     )
-                    time.sleep(2.0)
+                    time.sleep(sleep_time)
                     last_err = err
                     continue
                 raise err
