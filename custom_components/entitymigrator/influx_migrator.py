@@ -89,7 +89,7 @@ class InfluxV1Migrator:
         
         # Try full entity ID first
         entity_to_query = old_entity
-        q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
+        q = f"SHOW SERIES FROM /.*/ WHERE \"entity_id\" = '{entity_to_query}'"
         result = self.query(q, timeout=120)
         _LOGGER.info("InfluxDB SHOW SERIES for '%s' returned: %s", entity_to_query, result)
         
@@ -100,7 +100,7 @@ class InfluxV1Migrator:
         # If no series found and there is a dot, try stripped entity ID (object ID only)
         if not has_series and "." in old_entity:
             entity_to_query = old_entity.split(".", 1)[1]
-            q = f"SHOW SERIES WHERE \"entity_id\" = '{entity_to_query}'"
+            q = f"SHOW SERIES FROM /.*/ WHERE \"entity_id\" = '{entity_to_query}'"
             result = self.query(q, timeout=120)
             _LOGGER.info("InfluxDB SHOW SERIES (stripped) for '%s' returned: %s", entity_to_query, result)
             results = result.get("results", [])
