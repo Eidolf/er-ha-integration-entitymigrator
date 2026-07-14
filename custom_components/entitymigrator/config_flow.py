@@ -1117,12 +1117,8 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
                     True, # influxdb_only = True
                 )
                 
-                # Save new influx config into config entry data
-                new_data = dict(self.config_entry.data)
-                new_data["influx_config"] = new_influx_config
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=new_data
-                )
+                # Store new influx config in context to save at the end of the flow
+                self.context["new_influx_config"] = new_influx_config
 
                 # Show results in a form
                 summary_text = "\n".join([f"- {d}" for d in summary.get("details", [])])
@@ -1152,6 +1148,13 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Finished summary page for options flow."""
         if user_input is not None:
+            new_influx_config = self.context.get("new_influx_config")
+            if new_influx_config:
+                new_data = dict(self.config_entry.data)
+                new_data["influx_config"] = new_influx_config
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
             return self.async_create_entry(title="", data={})
 
         summary_text = self.context.get("summary_text", "")
