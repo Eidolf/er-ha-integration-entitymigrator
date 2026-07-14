@@ -87,6 +87,9 @@
         "title": "Ergebnis",
         "description": "{summary_text}"
       }
+    },
+    "error": {
+      "influx_conn_error": "Verbindung zu InfluxDB fehlgeschlagen. Bitte überprüfe Host, Port und Zugangsdaten."
     }
   }
 }
