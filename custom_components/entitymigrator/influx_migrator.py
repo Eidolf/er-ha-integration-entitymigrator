@@ -103,7 +103,28 @@ class InfluxV1Migrator:
         if not measurements_in_db:
             measurements_in_db = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
 
-        # 2. Query series scoped to each measurement (extremely fast index lookups)
+        # 2. Fetch all retention policies in the database (very fast)
+        retention_policies = ["autogen"]
+        try:
+            rp_res = self.query("SHOW RETENTION POLICIES", timeout=10)
+            results = rp_res.get("results", [])
+            if results and "series" in results[0]:
+                for val in results[0]["series"][0].get("values", []):
+                    rp_name = val[0]
+                    if rp_name not in retention_policies:
+                        retention_policies.append(rp_name)
+        except Exception as e:
+            _LOGGER.warning("Could not fetch retention policies: %s", e)
+
+        # 3. Construct the list of fully qualified measurements to query in a single batch
+        query_targets = []
+        for m in measurements_in_db:
+            query_targets.append(f'"{m}"')
+            for rp in retention_policies:
+                if rp != "autogen":
+                    query_targets.append(f'"{rp}"."{m}"')
+
+        # 4. Query series using a single combined SHOW SERIES query
         measurements_found = set()
         resolved_tag = old_entity
         
@@ -111,35 +132,31 @@ class InfluxV1Migrator:
         if "." in old_entity:
             candidates.append(old_entity.split(".", 1)[1])
             
+        from_clause = ", ".join(query_targets)
+
         for entity_to_try in candidates:
-            has_series_for_tag = False
-            for meas in measurements_in_db:
-                quoted_meas = f'"{meas}"'
-                q = f"SHOW SERIES FROM {quoted_meas} WHERE \"entity_id\" = '{entity_to_try}'"
-                try:
-                    result = self.query(q, timeout=10)
-                    results = result.get("results", [])
-                    if results and "series" in results[0]:
-                        for series in results[0]["series"]:
-                            for val in series.get("values", []):
-                                series_str = val[0]
-                                part0 = series_str.split(",")[0]
-                                if "." in part0:
-                                    parts = part0.split(".", 1)
-                                    rp = parts[0].strip('"')
-                                    m_name = parts[1].strip('"')
-                                    quoted_name = f'"{rp}"."{m_name}"'
-                                else:
-                                    m_name = part0.strip('"')
-                                    quoted_name = f'"{m_name}"'
-                                measurements_found.add(quoted_name)
-                        has_series_for_tag = True
-                except Exception as e:
-                    _LOGGER.warning("SHOW SERIES query failed for %s in %s: %s", entity_to_try, meas, e)
-            
-            if has_series_for_tag:
-                resolved_tag = entity_to_try
-                break
+            q = f"SHOW SERIES FROM {from_clause} WHERE \"entity_id\" = '{entity_to_try}'"
+            try:
+                result = self.query(q, timeout=20)
+                results = result.get("results", [])
+                if results and "series" in results[0]:
+                    for series in results[0]["series"]:
+                        for val in series.get("values", []):
+                            series_str = val[0]
+                            part0 = series_str.split(",")[0]
+                            if "." in part0:
+                                parts = part0.split(".", 1)
+                                rp = parts[0].strip('"')
+                                m_name = parts[1].strip('"')
+                                quoted_name = f'"{rp}"."{m_name}"'
+                            else:
+                                m_name = part0.strip('"')
+                                quoted_name = f'"{m_name}"'
+                            measurements_found.add(quoted_name)
+                    resolved_tag = entity_to_try
+                    break
+            except Exception as e:
+                _LOGGER.warning("Combined SHOW SERIES query failed for %s: %s", entity_to_try, e)
 
         # 3. For each measurement found, get count of points
         for measurement in sorted(list(measurements_found)):
