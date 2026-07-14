@@ -102,7 +102,7 @@ class InfluxV1Migrator:
         # Fallback to standard Home Assistant measurements if list is empty
         if not measurements_in_db:
             measurements_in_db = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
-        _LOGGER.info("[InfluxDB Validation] Measurements found/fallback: %s", measurements_in_db)
+        _LOGGER.warning("[InfluxDB Validation] Measurements found/fallback: %s", measurements_in_db)
 
         # 2. Fetch all retention policies in the database (very fast)
         retention_policies = ["autogen", "default"]
@@ -116,7 +116,7 @@ class InfluxV1Migrator:
                         retention_policies.append(rp_name)
         except Exception as e:
             _LOGGER.warning("Could not fetch retention policies: %s", e)
-        _LOGGER.info("[InfluxDB Validation] Retention policies found/fallback: %s", retention_policies)
+        _LOGGER.warning("[InfluxDB Validation] Retention policies found/fallback: %s", retention_policies)
 
         # 3. Construct the list of fully qualified measurements to query in a single batch
         query_targets = []
@@ -135,14 +135,14 @@ class InfluxV1Migrator:
             candidates.append(old_entity.split(".", 1)[1])
             
         from_clause = ", ".join(query_targets)
-        _LOGGER.info("[InfluxDB Validation] Query targets from_clause: %s", from_clause)
+        _LOGGER.warning("[InfluxDB Validation] Query targets from_clause: %s", from_clause)
 
         for entity_to_try in candidates:
             q = f"SHOW SERIES FROM {from_clause} WHERE \"entity_id\" = '{entity_to_try}'"
-            _LOGGER.info("[InfluxDB Validation] Running query: %s", q)
+            _LOGGER.warning("[InfluxDB Validation] Running query: %s", q)
             try:
                 result = self.query(q, timeout=20)
-                _LOGGER.info("[InfluxDB Validation] Query result: %s", result)
+                _LOGGER.warning("[InfluxDB Validation] Query result: %s", result)
                 results = result.get("results", [])
                 if results and "series" in results[0]:
                     for series in results[0]["series"]:
