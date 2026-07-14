@@ -104,7 +104,7 @@ class InfluxV1Migrator:
             measurements_in_db = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
 
         # 2. Fetch all retention policies in the database (very fast)
-        retention_policies = ["autogen"]
+        retention_policies = ["autogen", "default"]
         try:
             rp_res = self.query("SHOW RETENTION POLICIES", timeout=10)
             results = rp_res.get("results", [])
