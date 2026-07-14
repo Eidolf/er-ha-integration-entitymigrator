@@ -426,7 +426,8 @@ def run_db_migration(
                         )
                 result_summary["migration_type"] = f"{result_summary['migration_type']} & InfluxDB"
             except Exception as e:
-                _LOGGER.error("Fehler bei der InfluxDB-Migration: %s", e)
+                import traceback
+                _LOGGER.error("Fehler bei der InfluxDB-Migration aufgetreten!\n%s", traceback.format_exc())
                 result_summary["details"].append(f"InfluxDB-Fehler: {e}")
 
         return result_summary
@@ -435,7 +436,8 @@ def run_db_migration(
             session.rollback()
         except Exception:
             pass
-        _LOGGER.error("Database migration error: %s", err)
+        import traceback
+        _LOGGER.error("Datenbank-Migrationsfehler aufgetreten!\n%s", traceback.format_exc())
         raise err
     finally:
         try:
@@ -453,10 +455,11 @@ def check_migration_warnings(
     dt = dt_util.parse_datetime(cutoff_date_str)
     if dt is None:
         return []
-    dt = dt_util.as_utc(dt)
     ts = dt.timestamp()
-
     warnings = []
+    total_sql_rows = 0
+    total_influx_points = 0
+    has_influx_points = False
 
     if not influxdb_only:
         session = get_instance(hass).get_session()
@@ -484,11 +487,21 @@ def check_migration_warnings(
                         text(f"SELECT COUNT(*) FROM statistics WHERE metadata_id = :old_id"),
                         {"old_id": old_meta_id}
                     ).fetchone()
-                    if not count_row or count_row[0] == 0:
-                        warnings.append(
-                            f"Die Quell-Entität '{old_entity}' hat 0 Statistik-Einträge in der Datenbank. "
-                            "Sie wurde eventuell bereits migriert."
-                        )
+                    if count_row:
+                        total_sql_rows += count_row[0]
+                        if count_row[0] == 0:
+                            warnings.append(
+                                f"Die Quell-Entität '{old_entity}' hat 0 Statistik-Einträge in der Datenbank. "
+                                "Sie wurde eventuell bereits migriert."
+                            )
+
+                    # Also count short-term stats
+                    st_count_row = session.execute(
+                        text(f"SELECT COUNT(*) FROM statistics_short_term WHERE metadata_id = :old_id"),
+                        {"old_id": old_meta_id}
+                    ).fetchone()
+                    if st_count_row:
+                        total_sql_rows += st_count_row[0]
 
                 # 2. Check if new_entity already has statistics prior to cutoff (potential overwrite)
                 new_meta = session.execute(
@@ -528,11 +541,15 @@ def check_migration_warnings(
                 for old_entity, new_entity in mappings:
                     series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
                     if total_points > 0:
+                        has_influx_points = True
+                        total_influx_points += total_points
                         warnings.append(
                             f"InfluxDB: Für '{old_entity}' wurden {total_points} historische Datenpunkte in "
                             f"{len(series_info)} Measurements gefunden. Diese werden in '{new_entity}' kopiert."
                         )
                     elif total_points == -1:
+                        has_influx_points = True
+                        total_influx_points += 50000  # Fallback estimate
                         warnings.append(
                             f"InfluxDB: Für '{old_entity}' wurden historische Datenpunkte in "
                             f"{len(series_info)} Measurements gefunden (genaue Anzahl konnte wegen InfluxDB-Timeout nicht ermittelt werden). Diese werden kopiert."
@@ -543,6 +560,29 @@ def check_migration_warnings(
                         )
         except Exception as e:
             warnings.append(f"InfluxDB-Fehler bei der Überprüfung: {e}")
+
+    # Calculate estimated migration time
+    # SQLite is ~10,000 rows/second, InfluxDB is ~3,000 points/second
+    sql_est = total_sql_rows / 10000.0
+    influx_est = total_influx_points / 3000.0
+    total_est = (sql_est + influx_est) * 1.25  # Add a 25% safety buffer for lock waits
+    total_est = max(2.0, total_est)
+
+    if total_est < 60:
+        duration_text = f"ca. {int(total_est)} Sekunden"
+    else:
+        mins = int(total_est // 60)
+        secs = int(total_est % 60)
+        duration_text = f"ca. {mins} Minute(n) {secs} Sekunde(n)"
+
+    warnings.insert(
+        0,
+        f"ℹ️ Geschätzte Migrationsdauer: {duration_text} "
+        f"(basierend auf {total_sql_rows} lokalen SQL-Einträgen und "
+        f"{'mindestens ' if (has_influx_points and total_influx_points == 50000) else ''}"
+        f"{total_influx_points} InfluxDB-Datenpunkten)."
+    )
+
     return warnings
 
 
