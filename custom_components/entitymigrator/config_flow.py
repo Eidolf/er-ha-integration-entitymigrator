@@ -67,14 +67,32 @@ def run_db_migration(
                     password=influx_config.get("password"),
                     ssl=influx_config.get("ssl", False),
                 ) as migrator:
+                    def make_progress_callback(old_ent, new_ent):
+                        def progress_cb(copied, total):
+                            if total > 0:
+                                pct = (copied / total) * 100
+                                _LOGGER.info(
+                                    "[InfluxDB Migration] '%s' -> '%s': %d / %d Punkte kopiert (%.1f%%)",
+                                    old_ent, new_ent, copied, total, pct
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "[InfluxDB Migration] '%s' -> '%s': %d Punkte kopiert",
+                                    old_ent, new_ent, copied
+                                )
+                        return progress_cb
+
                     for old_entity, new_entity in mappings:
+                        _LOGGER.info("[InfluxDB Migration] Starte Kopiervorgang für '%s' -> '%s'...", old_entity, new_entity)
                         res = migrator.migrate_entity_data(
                             old_entity=old_entity,
                             new_entity=new_entity,
-                            delete_old=delete_old
+                            delete_old=delete_old,
+                            progress_callback=make_progress_callback(old_entity, new_entity)
                         )
                         copied = res["copied"]
                         deleted = res["deleted"]
+                        _LOGGER.info("[InfluxDB Migration] '%s' -> '%s' erfolgreich abgeschlossen: %d Punkte kopiert", old_entity, new_entity, copied)
                         result_summary["details"].append(
                             f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
                             + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
@@ -111,9 +129,11 @@ def run_db_migration(
                 has_lts_any = False
                 has_states_any = False
 
+                _LOGGER.info("[SQL Migration] Starte SQL-Migration für %d Entitäten...", len(mappings))
                 for old_entity, new_entity in mappings:
                     if not old_entity or not new_entity:
                         continue
+                    _LOGGER.info("[SQL Migration] Verarbeite '%s' -> '%s'...", old_entity, new_entity)
 
                     # 2. Cleanup old states history if requested
                     if delete_old:
@@ -327,6 +347,7 @@ def run_db_migration(
                             {"old_id": old_meta_id}
                         )
 
+                    _LOGGER.info("[SQL Migration] '%s' -> '%s' erfolgreich migriert.", old_entity, new_entity)
                     result_summary["details"].append(f"{old_entity} -> {new_entity}: Erfolgreich")
 
                 session.commit()
@@ -373,14 +394,32 @@ def run_db_migration(
                     password=influx_config.get("password"),
                     ssl=influx_config.get("ssl", False),
                 ) as migrator:
+                    def make_progress_callback(old_ent, new_ent):
+                        def progress_cb(copied, total):
+                            if total > 0:
+                                pct = (copied / total) * 100
+                                _LOGGER.info(
+                                    "[InfluxDB Migration] '%s' -> '%s': %d / %d Punkte kopiert (%.1f%%)",
+                                    old_ent, new_ent, copied, total, pct
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "[InfluxDB Migration] '%s' -> '%s': %d Punkte kopiert",
+                                    old_ent, new_ent, copied
+                                )
+                        return progress_cb
+
                     for old_entity, new_entity in mappings:
+                        _LOGGER.info("[InfluxDB Migration] Starte Kopiervorgang für '%s' -> '%s'...", old_entity, new_entity)
                         res = migrator.migrate_entity_data(
                             old_entity=old_entity,
                             new_entity=new_entity,
-                            delete_old=delete_old
+                            delete_old=delete_old,
+                            progress_callback=make_progress_callback(old_entity, new_entity)
                         )
                         copied = res["copied"]
                         deleted = res["deleted"]
+                        _LOGGER.info("[InfluxDB Migration] '%s' -> '%s' erfolgreich abgeschlossen: %d Punkte kopiert", old_entity, new_entity, copied)
                         result_summary["details"].append(
                             f"InfluxDB '{old_entity}' -> '{new_entity}': {copied} Datenpunkte kopiert"
                             + (f", {deleted} alte Datenpunkte gelöscht" if delete_old else "")
