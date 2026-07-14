@@ -507,6 +507,52 @@ def check_migration_warnings(
     return warnings
 
 
+def run_migration_in_background(
+    hass: HomeAssistant,
+    mappings: list[tuple[str, str]],
+    cutoff_date_str: str,
+    delete_old: bool,
+    influx_config: dict[str, Any] | None = None,
+    influxdb_only: bool = False,
+) -> None:
+    """Run the database migration transaction asynchronously in a background thread."""
+    def _run():
+        try:
+            summary = run_db_migration(
+                hass,
+                mappings,
+                cutoff_date_str,
+                delete_old,
+                influx_config,
+                influxdb_only
+            )
+            # Create persistent notification on success
+            details = "\n".join([f"- {d}" for d in summary.get("details", [])])
+            from homeassistant.components import persistent_notification
+            persistent_notification.create(
+                hass,
+                title="Statistik-Migration abgeschlossen",
+                message=(
+                    f"Die Migration für {len(mappings)} Entitäten wurde erfolgreich abgeschlossen!\n\n"
+                    f"**Status**: {summary.get('status')}\n"
+                    f"**Typ**: {summary.get('migration_type')}\n"
+                    f"**Details**:\n{details}"
+                ),
+                notification_id="entitymigrator_migration"
+            )
+        except Exception as err:
+            _LOGGER.error("Migration failed in background: %s", err)
+            from homeassistant.components import persistent_notification
+            persistent_notification.create(
+                hass,
+                title="Statistik-Migration fehlgeschlagen",
+                message=f"Während der Migration ist ein Fehler aufgetreten: {err}",
+                notification_id="entitymigrator_migration"
+            )
+
+    hass.async_add_executor_job(_run)
+
+
 
 class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Entity Statistics Migrator."""
@@ -755,8 +801,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["migration_warnings"] = warnings
                         return await self.async_step_confirm()
 
-                    summary = await get_instance(self.hass).async_add_executor_job(
-                        run_db_migration,
+                    run_migration_in_background(
                         self.hass,
                         mappings,
                         self.context["cutoff_date"],
@@ -764,7 +809,16 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context.get("influx_config"),
                         self.context.get("influxdb_only", False),
                     )
-                    self.context["migration_result"] = summary
+                    self.context["migration_result"] = {
+                        "status": "Hintergrund-Migration gestartet",
+                        "migration_type": "Asynchroner Task",
+                        "deleted": "Nein",
+                        "details": [
+                            "Die Migration wurde im Hintergrund gestartet, um Timeouts zu verhindern.",
+                            "Home Assistant benachrichtigt dich über das Glocken-Symbol unten links,",
+                            "sobald der Vorgang vollständig abgeschlossen ist."
+                        ]
+                    }
                     return await self.async_step_summary()
                 except ValueError as err:
                     if str(err).startswith("UNIT_MISMATCH:"):
@@ -891,8 +945,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context["migration_warnings"] = warnings
                         return await self.async_step_confirm()
 
-                    summary = await get_instance(self.hass).async_add_executor_job(
-                        run_db_migration,
+                    run_migration_in_background(
                         self.hass,
                         self.context["mappings"],
                         self.context["cutoff_date"],
@@ -900,7 +953,16 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context.get("influx_config"),
                         self.context.get("influxdb_only", False),
                     )
-                    self.context["migration_result"] = summary
+                    self.context["migration_result"] = {
+                        "status": "Hintergrund-Migration gestartet",
+                        "migration_type": "Asynchroner Task",
+                        "deleted": "Nein",
+                        "details": [
+                            "Die Migration wurde im Hintergrund gestartet, um Timeouts zu verhindern.",
+                            "Home Assistant benachrichtigt dich über das Glocken-Symbol unten links,",
+                            "sobald der Vorgang vollständig abgeschlossen ist."
+                        ]
+                    }
                     return await self.async_step_summary()
                 except ValueError as err:
                     if str(err).startswith("UNIT_MISMATCH:"):
@@ -951,8 +1013,7 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if user_input.get("confirm"):
                 try:
-                    summary = await get_instance(self.hass).async_add_executor_job(
-                        run_db_migration,
+                    run_migration_in_background(
                         self.hass,
                         self.context["mappings"],
                         self.context["cutoff_date"],
@@ -960,7 +1021,16 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.context.get("influx_config"),
                         self.context.get("influxdb_only", False),
                     )
-                    self.context["migration_result"] = summary
+                    self.context["migration_result"] = {
+                        "status": "Hintergrund-Migration gestartet",
+                        "migration_type": "Asynchroner Task",
+                        "deleted": "Nein",
+                        "details": [
+                            "Die Migration wurde im Hintergrund gestartet, um Timeouts zu verhindern.",
+                            "Home Assistant benachrichtigt dich über das Glocken-Symbol unten links,",
+                            "sobald der Vorgang vollständig abgeschlossen ist."
+                        ]
+                    }
                     return await self.async_step_summary()
                 except ValueError as err:
                     if str(err).startswith("UNIT_MISMATCH:"):
@@ -1106,9 +1176,8 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
                 ) as migrator:
                     await self.hass.async_add_executor_job(migrator.test_connection)
 
-                # Run InfluxDB migration again (InfluxDB-only mode)
-                summary = await self.hass.async_add_executor_job(
-                    run_db_migration,
+                # Run InfluxDB migration again (in the background)
+                run_migration_in_background(
                     self.hass,
                     mappings,
                     cutoff_date,
@@ -1121,8 +1190,11 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
                 self.context["new_influx_config"] = new_influx_config
 
                 # Show results in a form
-                summary_text = "\n".join([f"- {d}" for d in summary.get("details", [])])
-                self.context["summary_text"] = f"**Optionen erfolgreich angewendet!**\n\n{summary_text}"
+                self.context["summary_text"] = (
+                    "**Migration im Hintergrund gestartet!**\n\n"
+                    "Die Migration wurde asynchron im Hintergrund gestartet, um Timeouts zu verhindern.\n"
+                    "Home Assistant benachrichtigt dich über das Glocken-Symbol unten links, sobald der Vorgang abgeschlossen ist."
+                )
                 return await self.async_step_summary_options()
             except Exception as e:
                 _LOGGER.error("InfluxDB options migration failed: %s", e)
