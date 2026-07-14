@@ -1155,6 +1155,7 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={})
 
         summary_text = self.context.get("summary_text", "")
+        summary_text = summary_text.replace("%", "%%")
         return self.async_show_form(
             step_id="summary_options",
             description_placeholders={"summary_text": summary_text},
