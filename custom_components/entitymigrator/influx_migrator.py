@@ -87,22 +87,15 @@ class InfluxV1Migrator:
         total_points = 0
         has_timeout = False
         
-        # 1. Fetch all measurements in the database (metadata query, very fast)
-        try:
-            meas_res = self.query("SHOW MEASUREMENTS", timeout=30)
-            results = meas_res.get("results", [])
-            measurements_in_db = []
-            if results and "series" in results[0]:
-                for val in results[0]["series"][0].get("values", []):
-                    measurements_in_db.append(val[0])
-        except Exception as e:
-            _LOGGER.warning("Could not fetch measurements: %s", e)
-            measurements_in_db = []
-
-        # Fallback to standard Home Assistant measurements if list is empty
-        if not measurements_in_db:
-            measurements_in_db = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
-        _LOGGER.warning("[InfluxDB Validation] Measurements found/fallback: %s", measurements_in_db)
+        # 1. Construct a targeted list of candidate measurements
+        possible_measurements = ["state", "°C", "%", "lx", "hPa", "km/h", "m/s", "mm", "min", "h"]
+        possible_measurements.append(old_entity)
+        if "." in old_entity:
+            domain, object_id = old_entity.split(".", 1)
+            possible_measurements.append(object_id)
+            possible_measurements.append(domain)
+        possible_measurements = sorted(list(set(possible_measurements)))
+        _LOGGER.warning("[InfluxDB Validation] Target candidate measurements: %s", possible_measurements)
 
         # 2. Fetch all retention policies in the database (very fast)
         retention_policies = ["autogen", "default"]
@@ -120,7 +113,7 @@ class InfluxV1Migrator:
 
         # 3. Construct the list of fully qualified measurements to query in a single batch
         query_targets = []
-        for m in measurements_in_db:
+        for m in possible_measurements:
             query_targets.append(f'"{m}"')
             for rp in retention_policies:
                 if rp != "autogen":
