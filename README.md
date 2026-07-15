@@ -49,18 +49,7 @@ You can automate this via the **Advanced SSH & Web Terminal** Add-on:
 3. Go to the **Configuration** tab, find `init_commands`, and paste this background-loop script:
    ```yaml
    init_commands:
-     - >-
-       (
-       APP="addon_a0d7b954_influxdb";
-       for i in $(seq 1 30); do
-         if docker ps --format '{{.Names}}' | grep -q "$APP"; then
-           RUNFILE="/run/s6/legacy-services/influxdb/run";
-           docker exec "$APP" sh -c "grep -q 'ulimit -n 65536' '$RUNFILE' || (cp '$RUNFILE' '$RUNFILE.bak' && sed -i '/exec influxd/i ulimit -n 65536' '$RUNFILE' && s6-svc -r /run/s6/legacy-services/influxdb)";
-           break;
-         fi;
-         sleep 2;
-       done
-       ) &
+     - "nohup sh -c 'for i in $(seq 1 30); do if docker ps --format \"{{.Names}}\" | grep -q \"addon_a0d7b954_influxdb\"; then docker exec addon_a0d7b954_influxdb sh -c \"grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \\\"/exec influxd/i ulimit -n 65536\\\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)\"; break; fi; sleep 2; done' >/dev/null 2>&1 &"
    ```
 4. Click **Save** and restart the SSH Add-on.
 
