@@ -332,6 +332,9 @@ class InfluxV1Migrator:
                     copied_count += len(lines_to_write)
                     if progress_callback:
                         progress_callback(copied_count, total_points)
+                    if copied_count % 25000 == 0:
+                        _LOGGER.warning("[InfluxDB Migration] %d Punkte erreicht. Pausiere für 2 Sekunden, damit InfluxDB offene WAL-Dateien schließen kann...", copied_count)
+                        time.sleep(2.0)
 
                 if len(values) < chunk_size:
                     break
