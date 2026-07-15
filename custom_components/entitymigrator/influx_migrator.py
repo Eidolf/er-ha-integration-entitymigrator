@@ -142,12 +142,15 @@ class InfluxV1Migrator:
                         for val in series.get("values", []):
                             series_str = val[0]
                             part0 = series_str.split(",")[0]
+                            is_rp = False
                             if "." in part0:
                                 parts = part0.split(".", 1)
                                 rp = parts[0].strip('"')
-                                m_name = parts[1].strip('"')
-                                quoted_name = f'"{rp}"."{m_name}"'
-                            else:
+                                if rp in retention_policies:
+                                    is_rp = True
+                                    m_name = parts[1].strip('"')
+                                    quoted_name = f'"{rp}"."{m_name}"'
+                            if not is_rp:
                                 m_name = part0.strip('"')
                                 quoted_name = f'"{m_name}"'
                             measurements_found.add(quoted_name)
