@@ -168,15 +168,18 @@ class InfluxV1Migrator:
                 res_results = count_res.get("results", [])
                 if res_results and "series" in res_results[0]:
                     series_data = res_results[0]["series"][0]
-                    val_idx = -1
-                    for idx, col in enumerate(series_data.get("columns", [])):
-                        if col != "time":
-                            val_idx = idx
-                            break
-                    if val_idx != -1 and series_data.get("values"):
-                        raw_val = series_data["values"][0][val_idx]
-                        if raw_val is not None:
-                            count = int(raw_val)
+                    if series_data.get("values") and len(series_data["values"][0]) > 1:
+                        counts = []
+                        for idx, val in enumerate(series_data["values"][0]):
+                            if idx == 0:
+                                continue
+                            if val is not None:
+                                try:
+                                    counts.append(int(val))
+                                except (ValueError, TypeError):
+                                    pass
+                        if counts:
+                            count = max(counts)
             except Exception as e:
                 _LOGGER.warning("Could not count InfluxDB points for %s in %s (timeout/error): %s", resolved_tag, measurement, e)
                 count = -1
