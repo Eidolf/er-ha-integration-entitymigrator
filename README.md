@@ -37,30 +37,35 @@ When starting a migration flow, you will configure:
 5. **Confirmation**: A screen summarizing warnings, found data points, and the **estimated migration duration**.
 6. **Background Run**: Once started, the UI completes instantly. You can monitor progress in the Home Assistant logs and will receive a notification when finished.
 
-## Troubleshooting & System Limits
+## Optional: InfluxDB Tuning (ulimit / file descriptor limit)
 
-### InfluxDB "Too Many Open Files" Crash
-When migrating very large datasets spanning many years, InfluxDB must open WAL write files for many time-shards (weekly/monthly partitions) simultaneously. By default, the Home Assistant InfluxDB Add-on container limits open files to `1024`, causing the database to crash with a `too many open files` error and marking database segments as `.tsm.bad`.
+When migrating very large historical datasets, InfluxDB must write to many time-shards simultaneously. To prevent InfluxDB from hitting the default container file descriptor limit (`too many open files`) and locking up, you can automatically increase the limit (ulimit) to `65536` on startup.
 
-#### 1. Permanent Automation Fix (Highly Recommended)
-You can automate raising the file descriptor limit (ulimit) to `65536` on every system boot by using the **Advanced SSH & Web Terminal** Add-on:
+### 1. Automation via SSH Terminal Add-on
+You can automate this via the **Advanced SSH & Web Terminal** Add-on:
 
-1. Open the **Advanced SSH & Web Terminal** Add-on in your Home Assistant UI.
-2. Under the **Info** tab, disable **Protection mode** (this allows the SSH container to run Docker commands).
-3. Go to the **Configuration** tab, find the `init_commands` section, and paste the following snippet:
+1. Open the **Advanced SSH & Web Terminal** Add-on.
+2. Under the **Info** tab, disable **Protection mode** (enables Docker commands).
+3. Go to the **Configuration** tab, find `init_commands`, and paste this background-loop script:
    ```yaml
    init_commands:
      - >-
+       (
        APP="addon_a0d7b954_influxdb";
-       if docker ps --format '{{.Names}}' | grep -q "$APP"; then
-         RUNFILE="/run/s6/legacy-services/influxdb/run";
-         docker exec "$APP" sh -c "grep -q 'ulimit -n 65536' '$RUNFILE' || (cp '$RUNFILE' '$RUNFILE.bak' && sed -i '/exec influxd/i ulimit -n 65536' '$RUNFILE' && s6-svc -r /run/s6/legacy-services/influxdb)";
-       fi
+       for i in $(seq 1 30); do
+         if docker ps --format '{{.Names}}' | grep -q "$APP"; then
+           RUNFILE="/run/s6/legacy-services/influxdb/run";
+           docker exec "$APP" sh -c "grep -q 'ulimit -n 65536' '$RUNFILE' || (cp '$RUNFILE' '$RUNFILE.bak' && sed -i '/exec influxd/i ulimit -n 65536' '$RUNFILE' && s6-svc -r /run/s6/legacy-services/influxdb)";
+           break;
+         fi;
+         sleep 2;
+       done
+       ) &
    ```
-4. Click **Save** and restart the SSH Add-on. The patch will now run automatically on every system boot.
+4. Click **Save** and restart the SSH Add-on.
 
-#### 2. How to Verify the Patch
-To verify that the file descriptor limit of the running InfluxDB server has successfully been raised to `65536`, run this command in your SSH terminal:
+### 2. Verify the Active Limits
+To check if the ulimit of the running InfluxDB server has successfully been raised to `65536`, run this command in your SSH terminal:
 ```bash
 docker exec addon_a0d7b954_influxdb sh -c 'cat /proc/$(pidof influxd)/limits | grep "open files"'
 ```
@@ -69,20 +74,7 @@ docker exec addon_a0d7b954_influxdb sh -c 'cat /proc/$(pidof influxd)/limits | g
 Max open files            65536                524288               files
 ```
 
-#### 3. How to Restore `.tsm.bad` Files
-If InfluxDB already crashed and renamed your data segments to `.bad` files, you can restore them:
-1. Stop the InfluxDB service inside the container:
-   ```bash
-   docker exec addon_a0d7b954_influxdb s6-svc -d /run/s6/legacy-services/influxdb
-   ```
-2. Rename all `.bad` files back to `.tsm` in the database directory:
-   ```bash
-   docker exec addon_a0d7b954_influxdb sh -c "find /data/influxdb/data -name '*.tsm.bad' -exec sh -c 'for f do mv \"\$f\" \"\${f%.bad}\"; done' sh {} +"
-   ```
-3. Start the InfluxDB service again:
-   ```bash
-   docker exec addon_a0d7b954_influxdb s6-svc -u /run/s6/legacy-services/influxdb
-   ```
+## Troubleshooting
 
 - **Verbose Logs**: 
   The integration logs detailed progress and full error tracebacks. Check your `/config/home-assistant.log` file for `[SQL Migration]` and `[InfluxDB Validation]` warnings to inspect raw database queries and responses.
