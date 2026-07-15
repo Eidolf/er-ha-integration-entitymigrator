@@ -327,6 +327,8 @@ class InfluxV1Migrator:
 
                 if lines_to_write:
                     self.write_lines(lines_to_write)
+                    import time
+                    time.sleep(0.1)  # Throttle to prevent InfluxDB WAL/TSM engine crashes
                     copied_count += len(lines_to_write)
                     if progress_callback:
                         progress_callback(copied_count, total_points)
