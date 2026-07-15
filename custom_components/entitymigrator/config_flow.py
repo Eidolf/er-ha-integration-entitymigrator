@@ -538,6 +538,28 @@ def check_migration_warnings(
                 password=influx_config.get("password"),
                 ssl=influx_config.get("ssl", False)
             ) as migrator:
+                # Proactively check active shard count in InfluxDB to warn about ulimit risks
+                try:
+                    shard_res = migrator.query("SHOW SHARDS", timeout=10)
+                    results = shard_res.get("results", [])
+                    db_shards_count = 0
+                    if results and "series" in results[0]:
+                        columns = results[0]["series"][0].get("columns", [])
+                        db_idx = columns.index("database") if "database" in columns else 1
+                        for val in results[0]["series"][0].get("values", []):
+                            if len(val) > db_idx and val[db_idx] == influx_config["database"]:
+                                db_shards_count += 1
+                    
+                    if db_shards_count > 100:
+                        warnings.append(
+                            f"⚠️ InfluxDB-Warnung: Deine Datenbank hat derzeit {db_shards_count} aktive Shards. "
+                            "Falls das Open-File-Limit (ulimit -n) deines InfluxDB-Servers standardmäßig auf 1024 beschränkt ist, "
+                            "kann diese Migration die InfluxDB abstürzen lassen. Bitte stelle sicher, dass ulimit im Container "
+                            "auf 65536 erhöht wurde (siehe Anleitung) oder migriere in Jahresetappen."
+                        )
+                except Exception as err:
+                    _LOGGER.warning("Could not check InfluxDB shards count: %s", err)
+
                 for old_entity, new_entity in mappings:
                     series_info, total_points, _ = migrator.discover_series_and_counts(old_entity)
                     if total_points > 0:
