@@ -162,7 +162,9 @@ class InfluxV1Migrator:
             try:
                 # Use a timeout of 15 seconds for count checks
                 count_q = f"SELECT COUNT(*) FROM {measurement} WHERE \"entity_id\" = '{resolved_tag}'"
+                _LOGGER.warning("[InfluxDB Validation] Running count query: %s", count_q)
                 count_res = self.query(count_q, timeout=15)
+                _LOGGER.warning("[InfluxDB Validation] Count query result: %s", count_res)
                 res_results = count_res.get("results", [])
                 if res_results and "series" in res_results[0]:
                     series_data = res_results[0]["series"][0]
