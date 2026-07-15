@@ -47,10 +47,15 @@ You can automate this via the **Advanced SSH & Web Terminal** Add-on:
 1. Open the **Advanced SSH & Web Terminal** Add-on.
 2. Under the **Info** tab, disable **Protection mode** (enables Docker commands).
 3. Go to the **Configuration** tab, find `init_commands`, and paste this background-loop script:
-   ```yaml
-   init_commands:
-     - "nohup sh -c 'for i in $(seq 1 30); do if docker ps --format \"{{.Names}}\" | grep -q \"addon_a0d7b954_influxdb\"; then docker exec addon_a0d7b954_influxdb sh -c \"grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \\\"/exec influxd/i ulimit -n 65536\\\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)\"; break; fi; sleep 2; done' >/dev/null 2>&1 &"
-   ```
+   * **UI Editor (Standard list)**: Click "Add Item" and paste the following line **without any outer quotes** (`"` or `'` at the very beginning/end):
+     ```text
+     nohup sh -c 'while [ $SECONDS -lt 60 ]; do if docker ps --format "{{.Names}}" | grep -q "addon_a0d7b954_influxdb"; then docker exec addon_a0d7b954_influxdb sh -c "grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \"/exec influxd/i ulimit -n 65536\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)"; break; fi; sleep 2; done' >/dev/null 2>&1 &
+     ```
+   * **YAML Editor**:
+     ```yaml
+     init_commands:
+       - "nohup sh -c 'while [ \$SECONDS -lt 60 ]; do if docker ps --format \"{{.Names}}\" | grep -q \"addon_a0d7b954_influxdb\"; then docker exec addon_a0d7b954_influxdb sh -c \"grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \\\"/exec influxd/i ulimit -n 65536\\\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)\"; break; fi; sleep 2; done' >/dev/null 2>&1 &"
+     ```
 4. Click **Save** and restart the SSH Add-on.
 
 ### 2. Verify the Active Limits
