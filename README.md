@@ -58,6 +58,9 @@ You can automate this via the **Advanced SSH & Web Terminal** Add-on:
      ```
 4. Click **Save** and restart the SSH Add-on.
 
+> [!NOTE]
+> Once you have successfully completed all your historical InfluxDB migrations, you can safely delete this script from your SSH Add-on's `init_commands` to restore your InfluxDB container to its default system limits.
+
 ### 2. Verify the Active Limits
 To check if the ulimit of the running InfluxDB server has successfully been raised to `65536`, run this command in your SSH terminal:
 ```bash
