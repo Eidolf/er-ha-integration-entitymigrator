@@ -98,7 +98,7 @@ class InfluxV1Migrator:
         _LOGGER.warning("[InfluxDB Validation] Target candidate measurements: %s", possible_measurements)
 
         # 2. Fetch all retention policies in the database (very fast)
-        retention_policies = ["autogen", "default"]
+        retention_policies = ["autogen"]
         try:
             rp_res = self.query("SHOW RETENTION POLICIES", timeout=10)
             results = rp_res.get("results", [])
