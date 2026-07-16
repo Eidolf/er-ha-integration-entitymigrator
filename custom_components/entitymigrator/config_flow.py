@@ -72,7 +72,8 @@ def load_influxdb_excludes(hass: HomeAssistant) -> tuple[list[str], list[str]]:
 async def discover_cleanup_candidates(
     hass: HomeAssistant,
     influx_config: dict[str, Any],
-    strategy: str
+    strategy: str,
+    entry_mappings: list[tuple[str, str]] | None = None
 ) -> list[str]:
     """Find candidate entities for InfluxDB cleanup based on the selected strategy."""
     from .influx_migrator import InfluxV1Migrator
@@ -118,6 +119,12 @@ async def discover_cleanup_candidates(
             for old_entity, _ in mappings:
                 migrated_sources.add(old_entity)
         
+        for entity_id in sorted(list(entity_ids_in_db)):
+            if entity_id in migrated_sources:
+                candidates.append(entity_id)
+
+    elif strategy == "migrated_entry":
+        migrated_sources = {m[0] for m in entry_mappings} if entry_mappings else set()
         for entity_id in sorted(list(entity_ids_in_db)):
             if entity_id in migrated_sources:
                 candidates.append(entity_id)
@@ -1540,12 +1547,23 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options."""
+        errors = {}
+        influx_config = self.config_entry.data.get("influx_config") or {}
+        mappings = self.config_entry.data.get("mappings", [])
+
         if user_input is not None:
             if user_input["options_mode"] == "cleanup":
                 self.context["cleanup_mode"] = True
-                influx_config = self.config_entry.data.get("influx_config")
+                self.context["cleanup_strategy"] = "migrated_entry"
                 if influx_config and influx_config.get("host"):
-                    return await self.async_step_cleanup_select()
+                    candidates = await discover_cleanup_candidates(
+                        self.hass, influx_config, "migrated_entry", mappings
+                    )
+                    if not candidates:
+                        errors["options_mode"] = "no_cleanup_candidates"
+                    else:
+                        self.context["cleanup_candidates"] = candidates
+                        return await self.async_step_cleanup_confirm()
                 else:
                     return await self.async_step_cleanup_influxdb()
             else:
@@ -1570,7 +1588,7 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         return self.async_show_form(
-            step_id="init", data_schema=schema
+            step_id="init", data_schema=schema, errors=errors
         )
 
     async def async_step_migrate_influx_config(
@@ -1647,6 +1665,7 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
         """Handle InfluxDB configuration inputs for database cleanup in options flow."""
         errors = {}
         influx_config = self.config_entry.data.get("influx_config") or {}
+        mappings = self.config_entry.data.get("mappings", [])
 
         if user_input is not None:
             new_influx_config = {
@@ -1671,7 +1690,15 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
                     await self.hass.async_add_executor_job(migrator.test_connection)
                 
                 self.context["new_influx_config"] = new_influx_config
-                return await self.async_step_cleanup_select()
+                
+                candidates = await discover_cleanup_candidates(
+                    self.hass, new_influx_config, "migrated_entry", mappings
+                )
+                if not candidates:
+                    errors["base"] = "no_cleanup_candidates"
+                else:
+                    self.context["cleanup_candidates"] = candidates
+                    return await self.async_step_cleanup_confirm()
             except Exception as e:
                 _LOGGER.error("InfluxDB connection test failed: %s", e)
                 errors["base"] = "influx_conn_error"
@@ -1689,51 +1716,6 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="cleanup_influxdb", data_schema=schema, errors=errors
-        )
-
-    async def async_step_cleanup_select(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Select InfluxDB cleanup strategy in options flow."""
-        errors = {}
-
-        if user_input is not None:
-            strategy = user_input["strategy"]
-            self.context["cleanup_strategy"] = strategy
-            
-            # Fetch candidates list
-            influx_config = self.context.get("new_influx_config") or self.config_entry.data.get("influx_config") or {}
-            candidates = await discover_cleanup_candidates(self.hass, influx_config, strategy)
-            
-            if not candidates:
-                errors["base"] = "no_cleanup_candidates"
-            else:
-                self.context["cleanup_candidates"] = candidates
-                return await self.async_step_cleanup_confirm()
-
-        schema = vol.Schema(
-            {
-                vol.Required("strategy", default="yaml"): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(
-                                value="yaml", label="Option 1: Exclude-Liste aus configuration.yaml auslesen"
-                            ),
-                            selector.SelectOptionDict(
-                                value="migrated", label="Option 2: Bereits migrierte Quell-Entitaeten loeschen"
-                            ),
-                            selector.SelectOptionDict(
-                                value="orphaned", label="Option 3: Verwaiste InfluxDB-Entitaeten (nicht in HA vorhanden)"
-                            ),
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="cleanup_select", data_schema=schema, errors=errors
         )
 
     async def async_step_cleanup_confirm(
