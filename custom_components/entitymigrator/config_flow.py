@@ -100,35 +100,58 @@ async def discover_cleanup_candidates(
         
     candidates = []
     
+    # Pre-parse DB entities into a set of object IDs (stripping domain prefixes if any exist)
+    db_object_ids = set()
+    for db_ent in entity_ids_in_db:
+        db_object_ids.add(db_ent)
+        if "." in db_ent:
+            db_object_ids.add(db_ent.split(".", 1)[1])
+            
     if strategy == "yaml":
         excluded_entities, excluded_entity_globs = await hass.async_add_executor_job(
             load_influxdb_excludes, hass
         )
         import fnmatch
-        for entity_id in sorted(list(entity_ids_in_db)):
-            is_excluded = entity_id in excluded_entities or any(
-                fnmatch.fnmatch(entity_id, pattern) for pattern in excluded_entity_globs
+        
+        # 1. Check exact excluded entities
+        for entity_id in excluded_entities:
+            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
+                if entity_id not in candidates:
+                    candidates.append(entity_id)
+                    
+        # 2. Check glob exclusions against database entities
+        for db_ent in sorted(list(entity_ids_in_db)):
+            obj_id = db_ent.split(".", 1)[1] if "." in db_ent else db_ent
+            is_glob_match = any(
+                fnmatch.fnmatch(db_ent, pattern) or
+                fnmatch.fnmatch(f"sensor.{obj_id}", pattern) or
+                fnmatch.fnmatch(f"binary_sensor.{obj_id}", pattern)
+                for pattern in excluded_entity_globs
             )
-            if is_excluded:
-                candidates.append(entity_id)
+            if is_glob_match:
+                if db_ent not in candidates:
+                    candidates.append(db_ent)
                 
     elif strategy == "migrated":
         from .const import DOMAIN
         entries = hass.config_entries.async_entries(DOMAIN)
         migrated_sources = set()
         for entry in entries:
-            mappings = entry.data.get("mappings", [])
-            for old_entity, _ in mappings:
+            mappings_list = entry.data.get("mappings", [])
+            for old_entity, _ in mappings_list:
                 migrated_sources.add(old_entity)
         
-        for entity_id in sorted(list(entity_ids_in_db)):
-            if entity_id in migrated_sources:
+        for entity_id in sorted(list(migrated_sources)):
+            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
                 candidates.append(entity_id)
 
     elif strategy == "migrated_entry":
         migrated_sources = {m[0] for m in entry_mappings} if entry_mappings else set()
-        for entity_id in sorted(list(entity_ids_in_db)):
-            if entity_id in migrated_sources:
+        for entity_id in sorted(list(migrated_sources)):
+            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
                 candidates.append(entity_id)
                 
     elif strategy == "orphaned":
@@ -141,10 +164,12 @@ async def discover_cleanup_candidates(
             registry_entities = set()
             
         all_ha_entities = ha_entities.union(registry_entities)
+        ha_object_ids = {s.split(".", 1)[1] for s in all_ha_entities if "." in s}
         
-        for entity_id in sorted(list(entity_ids_in_db)):
-            if entity_id not in all_ha_entities:
-                candidates.append(entity_id)
+        for db_ent in sorted(list(entity_ids_in_db)):
+            obj_id = db_ent.split(".", 1)[1] if "." in db_ent else db_ent
+            if obj_id not in ha_object_ids and db_ent not in all_ha_entities:
+                candidates.append(db_ent)
                 
     return candidates
 

@@ -100,15 +100,19 @@ class InfluxV1Migrator:
 
     def delete_entity_series(self, entity_id):
         """Delete all series/measurements belonging to an entity."""
-        try:
-            self.query(f"DROP SERIES WHERE \"entity_id\" = '{entity_id}'")
-        except Exception as e:
-            _LOGGER.warning("DROP SERIES failed for %s: %s", entity_id, e)
+        obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+        
+        for name in {entity_id, obj_id}:
+            try:
+                self.query(f"DROP SERIES WHERE \"entity_id\" = '{name}'")
+            except Exception as e:
+                _LOGGER.warning("DROP SERIES failed for tag entity_id='%s': %s", name, e)
             
-        try:
-            self.query(f'DROP MEASUREMENT "{entity_id}"')
-        except Exception:
-            pass
+        for name in {entity_id, obj_id}:
+            try:
+                self.query(f'DROP MEASUREMENT "{name}"')
+            except Exception:
+                pass
 
     def discover_series_and_counts(self, old_entity):
         """Find measurements containing the entity and count total data points."""
