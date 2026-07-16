@@ -1,7 +1,7 @@
 # Entity Statistics Migrator for Home Assistant
 <img src="https://raw.githubusercontent.com/Eidolf/er-ha-integration-entitymigrator/main/logo.png" alt="Logo" width="200">
 
-This custom integration enables the migration of long-term statistics (LTS) and historical InfluxDB data points from an old entity to a new entity directly inside Home Assistant using a graphical user interface.
+This custom integration enables the migration of long-term statistics (LTS) and historical InfluxDB data points from an old entity to a new entity directly inside Home Assistant using a graphical user interface. Additionally, it offers powerful tools to clean up unwanted data from InfluxDB.
 
 > [!WARNING]
 > This integration directly modifies the Home Assistant database. Ensure you have a **working backup** before starting the migration process.
@@ -10,14 +10,18 @@ This custom integration enables the migration of long-term statistics (LTS) and 
 
 - **Direct Database Manipulation**: Works inside a database transaction via the SQLAlchemy session from the `recorder` component.
 - **InfluxDB Support**: Optional migration of historical data points in InfluxDB (supports V1 API, connection tests, and automatic tag-key resolution).
-- **Asynchronous Background Tasks**: Offloads database writes to a background worker thread. This keeps the UI responsive and prevents reverse proxy (e.g. Cloudflare HTTP 524) timeouts.
+- **Asynchronous Background Tasks**: Offloads database writes and deletions to a background worker thread. This keeps the UI responsive and prevents reverse proxy (e.g. Cloudflare HTTP 524) timeouts.
 - **System Throttling**: Automatically throttles InfluxDB writes (250ms pause per 5,000 points and a 2-second cooldown pause every 25,000 points) to prevent Write-Ahead Log (WAL) locks and container crashes.
 - **Estimated Duration**: Automatically counts SQL rows and InfluxDB points to show a time estimate before starting the migration.
-- **Persistent Notifications**: Sends a Home Assistant notification (bell icon) with detailed statistics as soon as the background task finishes.
-- **Multiple Migration Modes**:
+- **Persistent Notifications**: Sends a Home Assistant notification (bell icon) with detailed statistics as soon as a migration or cleanup finishes.
+- **Multiple Migration & Cleanup Modes**:
   - **Geräte-Migration (Device Migration)**: Automatically maps all entities of a device to match the new device's entities.
   - **Einzelne Entität manuell migrieren (Single Entity)**: Migrate one specific sensor manually.
   - **Nur InfluxDB migrieren (InfluxDB Only)**: Re-run or run InfluxDB migrations without altering local SQL statistics.
+  - **InfluxDB-Datenbank bereinigen (Cleanup)**: Scan and purge unwanted data from InfluxDB based on three configurable strategies:
+    1. **Option 1 (yaml)**: Excluded entities/globs parsed from your `configuration.yaml` `influxdb:` exclusion rules.
+    2. **Option 2 (migrated)**: Old source entities that have already been successfully migrated by this integration.
+    3. **Option 3 (orphaned)**: Orphaned InfluxDB entities that no longer exist in Home Assistant's state list or Entity Registry.
 - **Offset Calculation**: Calculates the difference in accumulated values for meters/sum sensors and adds the offset to prevent spikes in the Energy Dashboard.
 - **Optional Cleanup**: Automatically purges remaining statistics and metadata of the old entity after migration.
 
@@ -30,12 +34,11 @@ This custom integration enables the migration of long-term statistics (LTS) and 
 ## Config Flow / Usage
 
 When starting a migration flow, you will configure:
-1. **Mode**: Choose between Device Migration, Single Entity, or InfluxDB Only.
-2. **Cutoff Date**: The transition timestamp. Statistics *before* this date will be migrated from the old entity to the new entity.
-3. **Clean up**: A checkbox to decide whether the old entity's metadata should be purged.
-4. **InfluxDB Config (Optional)**: Connection details for InfluxDB (Host, Port, Database, Credentials).
-5. **Confirmation**: A screen summarizing warnings, found data points, and the **estimated migration duration**.
-6. **Background Run**: Once started, the UI completes instantly. You can monitor progress in the Home Assistant logs and will receive a notification when finished.
+1. **Mode**: Choose between Device Migration, Single Entity, Loop, or InfluxDB Cleanup.
+2. **Cutoff Date / Options**: Configure time boundaries or select your InfluxDB cleanup strategy.
+3. **InfluxDB Config (Optional)**: Connection details for InfluxDB (Host, Port, Database, Credentials).
+4. **Confirmation**: A checklist of candidates (for cleanup) or a summary of warnings and duration (for migrations).
+5. **Background Run**: The task executes in the background, and you receive a notification when finished.
 
 ## Optional: InfluxDB Tuning (ulimit / file descriptor limit)
 
@@ -47,15 +50,21 @@ You can automate this via the **Advanced SSH & Web Terminal** Add-on:
 1. Open the **Advanced SSH & Web Terminal** Add-on.
 2. Under the **Info** tab, disable **Protection mode** (enables Docker commands).
 3. Go to the **Configuration** tab, find `init_commands`, and paste this background-loop script:
-   * **UI Editor (Standard list)**: Click "Add Item" and paste the following line **without any outer quotes** (`"` or `'` at the very beginning/end):
-     ```text
-     nohup sh -c 'i=0; while [ $i -lt 30 ]; do if docker ps --format "{{.Names}}" | grep -q "addon_a0d7b954_influxdb"; then docker exec addon_a0d7b954_influxdb sh -c "grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \"/exec influxd/i ulimit -n 65536\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)"; break; fi; i=$((i+1)); sleep 2; done' >/dev/null 2>&1 &
-     ```
-   * **YAML Editor**:
-     ```yaml
-     init_commands:
-       - "nohup sh -c 'i=0; while [ \$i -lt 30 ]; do if docker ps --format \"{{.Names}}\" | grep -q \"addon_a0d7b954_influxdb\"; then docker exec addon_a0d7b954_influxdb sh -c \"grep -q ulimit /run/s6/legacy-services/influxdb/run || (sed -i \\\"/exec influxd/i ulimit -n 65536\\\" /run/s6/legacy-services/influxdb/run && s6-svc -r /run/s6/legacy-services/influxdb)\"; break; fi; i=\$((\$i+1)); sleep 2; done' >/dev/null 2>&1 &"
-     ```
+   ```yaml
+   init_commands:
+     - >-
+       (
+       APP="addon_a0d7b954_influxdb";
+       for i in $(seq 1 30); do
+         if docker ps --format "{{.Names}}" | grep -q "$APP"; then
+           RUNFILE="/run/s6/legacy-services/influxdb/run";
+           docker exec "$APP" sh -c "grep -q 'ulimit -n 65536' '$RUNFILE' || (cp '$RUNFILE' '$RUNFILE.bak' && sed -i '/exec influxd/i ulimit -n 65536' '$RUNFILE' && s6-svc -r /run/s6/legacy-services/influxdb)";
+           break;
+         fi;
+         sleep 2;
+       done
+       ) &
+   ```
 4. Click **Save** and restart the SSH Add-on.
 
 > [!NOTE]
