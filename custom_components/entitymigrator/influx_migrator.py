@@ -114,6 +114,30 @@ class InfluxV1Migrator:
             except Exception:
                 pass
 
+    def check_entity_exists(self, entity_id):
+        """Check if any series or measurement exists for the given entity ID."""
+        obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+        
+        for name in [entity_id, obj_id]:
+            try:
+                res = self.query(f"SHOW SERIES WHERE \"entity_id\" = '{name}'")
+                results = res.get("results", [])
+                if results and "series" in results[0]:
+                    return True
+            except Exception:
+                pass
+                
+        for name in [entity_id, obj_id]:
+            try:
+                res = self.query(f"SHOW MEASUREMENTS WITH MEASUREMENT = '{name}'")
+                results = res.get("results", [])
+                if results and "series" in results[0]:
+                    return True
+            except Exception:
+                pass
+                
+        return False
+
     def discover_series_and_counts(self, old_entity):
         """Find measurements containing the entity and count total data points."""
         series_info = []

@@ -78,6 +78,71 @@ async def discover_cleanup_candidates(
     """Find candidate entities for InfluxDB cleanup based on the selected strategy."""
     from .influx_migrator import InfluxV1Migrator
     
+    candidates = []
+    
+    if strategy in ["yaml", "migrated", "migrated_entry"]:
+        try:
+            with InfluxV1Migrator(
+                host=influx_config["host"],
+                port=influx_config["port"],
+                database=influx_config["database"],
+                username=influx_config.get("username"),
+                password=influx_config.get("password"),
+                ssl=influx_config.get("ssl", False)
+            ) as migrator:
+                await hass.async_add_executor_job(migrator.test_connection)
+                
+                if strategy == "migrated_entry":
+                    migrated_sources = {m[0] for m in entry_mappings} if entry_mappings else set()
+                    for entity_id in sorted(list(migrated_sources)):
+                        exists = await hass.async_add_executor_job(migrator.check_entity_exists, entity_id)
+                        _LOGGER.warning("[InfluxDB Cleanup] Checking migrated_entry '%s' existence: %s", entity_id, exists)
+                        if exists:
+                            candidates.append(entity_id)
+                            
+                elif strategy == "migrated":
+                    from .const import DOMAIN
+                    entries = hass.config_entries.async_entries(DOMAIN)
+                    migrated_sources = set()
+                    for entry in entries:
+                        mappings_list = entry.data.get("mappings", [])
+                        for old_entity, _ in mappings_list:
+                            migrated_sources.add(old_entity)
+                            
+                    for entity_id in sorted(list(migrated_sources)):
+                        exists = await hass.async_add_executor_job(migrator.check_entity_exists, entity_id)
+                        if exists:
+                            candidates.append(entity_id)
+                            
+                elif strategy == "yaml":
+                    excluded_entities, excluded_entity_globs = await hass.async_add_executor_job(
+                        load_influxdb_excludes, hass
+                    )
+                    for entity_id in excluded_entities:
+                        exists = await hass.async_add_executor_job(migrator.check_entity_exists, entity_id)
+                        if exists:
+                            candidates.append(entity_id)
+                            
+                    if excluded_entity_globs:
+                        entity_ids_in_db = await hass.async_add_executor_job(migrator.get_all_entity_ids)
+                        import fnmatch
+                        for db_ent in sorted(list(entity_ids_in_db)):
+                            obj_id = db_ent.split(".", 1)[1] if "." in db_ent else db_ent
+                            is_glob_match = any(
+                                fnmatch.fnmatch(db_ent, pattern) or
+                                fnmatch.fnmatch(f"sensor.{obj_id}", pattern) or
+                                fnmatch.fnmatch(f"binary_sensor.{obj_id}", pattern)
+                                for pattern in excluded_entity_globs
+                            )
+                            if is_glob_match:
+                                if db_ent not in candidates:
+                                    candidates.append(db_ent)
+                                    
+            return candidates
+        except Exception as e:
+            _LOGGER.warning("[InfluxDB Cleanup] Direct check failed: %s", e)
+            return []
+
     entity_ids_in_db = set()
     try:
         with InfluxV1Migrator(
@@ -98,63 +163,13 @@ async def discover_cleanup_candidates(
     if not entity_ids_in_db:
         return []
         
-    candidates = []
-    
-    # Pre-parse DB entities into a set of object IDs (stripping domain prefixes if any exist)
     db_object_ids = set()
     for db_ent in entity_ids_in_db:
         db_object_ids.add(db_ent)
         if "." in db_ent:
             db_object_ids.add(db_ent.split(".", 1)[1])
             
-    if strategy == "yaml":
-        excluded_entities, excluded_entity_globs = await hass.async_add_executor_job(
-            load_influxdb_excludes, hass
-        )
-        import fnmatch
-        
-        # 1. Check exact excluded entities
-        for entity_id in excluded_entities:
-            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
-            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
-                if entity_id not in candidates:
-                    candidates.append(entity_id)
-                    
-        # 2. Check glob exclusions against database entities
-        for db_ent in sorted(list(entity_ids_in_db)):
-            obj_id = db_ent.split(".", 1)[1] if "." in db_ent else db_ent
-            is_glob_match = any(
-                fnmatch.fnmatch(db_ent, pattern) or
-                fnmatch.fnmatch(f"sensor.{obj_id}", pattern) or
-                fnmatch.fnmatch(f"binary_sensor.{obj_id}", pattern)
-                for pattern in excluded_entity_globs
-            )
-            if is_glob_match:
-                if db_ent not in candidates:
-                    candidates.append(db_ent)
-                
-    elif strategy == "migrated":
-        from .const import DOMAIN
-        entries = hass.config_entries.async_entries(DOMAIN)
-        migrated_sources = set()
-        for entry in entries:
-            mappings_list = entry.data.get("mappings", [])
-            for old_entity, _ in mappings_list:
-                migrated_sources.add(old_entity)
-        
-        for entity_id in sorted(list(migrated_sources)):
-            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
-            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
-                candidates.append(entity_id)
-
-    elif strategy == "migrated_entry":
-        migrated_sources = {m[0] for m in entry_mappings} if entry_mappings else set()
-        for entity_id in sorted(list(migrated_sources)):
-            obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
-            if obj_id in db_object_ids or entity_id in entity_ids_in_db:
-                candidates.append(entity_id)
-                
-    elif strategy == "orphaned":
+    if strategy == "orphaned":
         ha_entities = set(hass.states.async_entity_ids())
         from homeassistant.helpers import entity_registry as er
         try:
