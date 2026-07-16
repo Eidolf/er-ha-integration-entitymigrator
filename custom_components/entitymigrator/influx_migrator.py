@@ -88,9 +88,11 @@ class InfluxV1Migrator:
             entity_ids = set()
             results = res.get("results", [])
             if results and "series" in results[0]:
+                columns = results[0]["series"][0].get("columns", [])
+                val_idx = columns.index("value") if "value" in columns else 1
                 for val in results[0]["series"][0].get("values", []):
-                    if val:
-                        entity_ids.add(val[0])
+                    if len(val) > val_idx and val[val_idx]:
+                        entity_ids.add(val[val_idx])
             return entity_ids
         except Exception as e:
             _LOGGER.error("Could not fetch entity_ids from InfluxDB: %s", e)
