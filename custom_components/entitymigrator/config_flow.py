@@ -90,9 +90,11 @@ async def discover_cleanup_candidates(
         ) as migrator:
             entity_ids_in_db = await hass.async_add_executor_job(migrator.get_all_entity_ids)
     except Exception as e:
-        _LOGGER.error("Could not fetch unique entity IDs from InfluxDB: %s", e)
+        _LOGGER.warning("[InfluxDB Cleanup] Could not fetch unique entity IDs from InfluxDB: %s", e)
         return []
         
+    _LOGGER.warning("[InfluxDB Cleanup] Strategy: %s, Mappings: %s, Database Entities: %s", strategy, entry_mappings, list(entity_ids_in_db))
+
     if not entity_ids_in_db:
         return []
         
