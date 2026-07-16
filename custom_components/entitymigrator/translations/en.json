@@ -54,6 +54,32 @@
           "influx_password": "Password (optional)",
           "influx_ssl": "Use SSL Connection"
         }
+      },
+      "cleanup_influxdb": {
+        "title": "InfluxDB Configuration (Cleanup)",
+        "description": "Enter the connection details for your InfluxDB v1 instance to scan for orphaned or excluded data.",
+        "data": {
+          "influx_host": "Host / IP Address",
+          "influx_port": "Port",
+          "influx_database": "Database Name",
+          "influx_username": "Username (optional)",
+          "influx_password": "Password (optional)",
+          "influx_ssl": "Use SSL Connection"
+        }
+      },
+      "cleanup_select": {
+        "title": "Cleanup Options",
+        "description": "Select which cleanup strategy should be used to scan InfluxDB.",
+        "data": {
+          "strategy": "Cleanup Strategy"
+        }
+      },
+      "cleanup_confirm": {
+        "title": "Select Entities to Delete",
+        "description": "Select the entities whose historical data you want to permanently delete from InfluxDB.",
+        "data": {
+          "entities_to_delete": "Delete Entities"
+        }
       }
     },
     "error": {
@@ -63,7 +89,9 @@
       "no_device_entities": "No entities found for this device.",
       "unit_mismatch": "The physical units of the entities do not match. Please ensure both entities use the same unit (e.g. Wh or kWh).",
       "not_confirmed": "You must check the confirmation box to proceed.",
-      "influx_conn_error": "Connection to InfluxDB failed. Please verify host, port, and credentials."
+      "influx_conn_error": "Connection to InfluxDB failed. Please verify host, port, and credentials.",
+      "no_cleanup_candidates": "No cleanup candidate entities found in InfluxDB.",
+      "no_entities_selected": "You must select at least one entity to delete."
     },
     "abort": {
       "already_configured": "Device is already configured"

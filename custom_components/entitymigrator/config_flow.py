@@ -33,6 +33,160 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def load_influxdb_excludes(hass: HomeAssistant) -> tuple[list[str], list[str]]:
+    """Load entities and entity_globs excluded from InfluxDB configuration.yaml."""
+    import os
+    import re
+    from homeassistant.util.yaml import load_yaml
+    
+    entities = []
+    entity_globs = []
+    
+    yaml_path = os.path.join(hass.config.config_dir, "configuration.yaml")
+    if not os.path.exists(yaml_path):
+        return entities, entity_globs
+        
+    try:
+        config = load_yaml(yaml_path) or {}
+        influx_conf = config.get("influxdb", {})
+        if not influx_conf and "influxdb" in config:
+            pass
+        exclude_conf = influx_conf.get("exclude", {})
+        entities = exclude_conf.get("entities", [])
+        entity_globs = exclude_conf.get("entity_globs", [])
+    except Exception as e:
+        _LOGGER.error("Failed to parse configuration.yaml for InfluxDB excludes: %s", e)
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            exclude_match = re.search(r"exclude:\s*(.*)", content, re.DOTALL)
+            if exclude_match:
+                exclude_block = exclude_match.group(1)
+                entity_globs = re.findall(r"entity_globs:\s*([^#\n]*)", exclude_block)
+        except Exception:
+            pass
+            
+    return entities, entity_globs
+
+
+async def discover_cleanup_candidates(
+    hass: HomeAssistant,
+    influx_config: dict[str, Any],
+    strategy: str
+) -> list[str]:
+    """Find candidate entities for InfluxDB cleanup based on the selected strategy."""
+    from .influx_migrator import InfluxV1Migrator
+    
+    entity_ids_in_db = set()
+    try:
+        with InfluxV1Migrator(
+            host=influx_config["host"],
+            port=influx_config["port"],
+            database=influx_config["database"],
+            username=influx_config.get("username"),
+            password=influx_config.get("password"),
+            ssl=influx_config.get("ssl", False)
+        ) as migrator:
+            entity_ids_in_db = await hass.async_add_executor_job(migrator.get_all_entity_ids)
+    except Exception as e:
+        _LOGGER.error("Could not fetch unique entity IDs from InfluxDB: %s", e)
+        return []
+        
+    if not entity_ids_in_db:
+        return []
+        
+    candidates = []
+    
+    if strategy == "yaml":
+        excluded_entities, excluded_entity_globs = await hass.async_add_executor_job(
+            load_influxdb_excludes, hass
+        )
+        import fnmatch
+        for entity_id in sorted(list(entity_ids_in_db)):
+            is_excluded = entity_id in excluded_entities or any(
+                fnmatch.fnmatch(entity_id, pattern) for pattern in excluded_entity_globs
+            )
+            if is_excluded:
+                candidates.append(entity_id)
+                
+    elif strategy == "migrated":
+        from .const import DOMAIN
+        entries = hass.config_entries.async_entries(DOMAIN)
+        migrated_sources = set()
+        for entry in entries:
+            mappings = entry.data.get("mappings", [])
+            for old_entity, _ in mappings:
+                migrated_sources.add(old_entity)
+        
+        for entity_id in sorted(list(entity_ids_in_db)):
+            if entity_id in migrated_sources:
+                candidates.append(entity_id)
+                
+    elif strategy == "orphaned":
+        ha_entities = set(hass.states.async_entity_ids())
+        from homeassistant.helpers import entity_registry as er
+        try:
+            registry = er.async_get(hass)
+            registry_entities = {entry.entity_id for entry in registry.entities.values()}
+        except Exception:
+            registry_entities = set()
+            
+        all_ha_entities = ha_entities.union(registry_entities)
+        
+        for entity_id in sorted(list(entity_ids_in_db)):
+            if entity_id not in all_ha_entities:
+                candidates.append(entity_id)
+                
+    return candidates
+
+
+def run_cleanup_in_background(hass: HomeAssistant, entities_to_delete: list[str], influx_config: dict[str, Any]):
+    """Run the InfluxDB cleanup in a background thread."""
+    def _execute():
+        from .influx_migrator import InfluxV1Migrator
+        import traceback
+        
+        success_count = 0
+        errors = []
+        
+        try:
+            with InfluxV1Migrator(
+                host=influx_config["host"],
+                port=influx_config["port"],
+                database=influx_config["database"],
+                username=influx_config.get("username"),
+                password=influx_config.get("password"),
+                ssl=influx_config.get("ssl", False)
+            ) as migrator:
+                for entity in entities_to_delete:
+                    try:
+                        migrator.delete_entity_series(entity)
+                        success_count += 1
+                    except Exception as e:
+                        errors.append(f"{entity}: {e}")
+                        _LOGGER.error("Fehler beim Loeschen von %s: %s", entity, traceback.format_exc())
+        except Exception as e:
+            errors.append(f"Verbindungsfehler: {e}")
+            
+        title = "InfluxDB-Bereinigung abgeschlossen"
+        if errors:
+            message = (
+                f"Die Bereinigung wurde mit Fehlern beendet.\n\n"
+                f"Erfolgreich geloescht: {success_count} Entitaeten.\n"
+                f"Fehler:\n" + "\n".join(errors[:5])
+            )
+        else:
+            message = f"Die Bereinigung von {success_count} Entitaeten in InfluxDB wurde erfolgreich abgeschlossen!"
+            
+        hass.components.persistent_notification.create(
+            message,
+            title=title,
+            notification_id="influxdb_cleanup_result"
+        )
+        
+    hass.async_add_executor_job(_execute)
+
+
 def run_db_migration(
     hass: HomeAssistant,
     mappings: list[tuple[str, str]],
@@ -679,6 +833,9 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if self.context["influxdb_only"]:
                 self.context["influxdb_migrate"] = True
 
+            if user_input[CONF_MODE] == "cleanup":
+                return await self.async_step_cleanup_influxdb()
+
             if self.context["influxdb_migrate"]:
                 return await self.async_step_influxdb()
 
@@ -705,6 +862,10 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value="loop",
                                 label="Mehrere Entitäten manuell nacheinander hinzufügen (Loop)",
+                            ),
+                            selector.SelectOptionDict(
+                                value="cleanup",
+                                label="InfluxDB-Datenbank bereinigen (Cleanup)",
                             ),
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
@@ -770,7 +931,141 @@ class EntityMigratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="influxdb", data_schema=schema, errors=errors
         )
+    async def async_step_cleanup_influxdb(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle InfluxDB configuration inputs for database cleanup."""
+        errors = {}
 
+        if user_input is not None:
+            self.context["influx_config"] = {
+                "host": user_input["influx_host"],
+                "port": user_input["influx_port"],
+                "database": user_input["influx_database"],
+                "username": user_input.get("influx_username"),
+                "password": user_input.get("influx_password"),
+                "ssl": user_input.get("influx_ssl", False),
+            }
+
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                with InfluxV1Migrator(
+                    host=user_input["influx_host"],
+                    port=user_input["influx_port"],
+                    database=user_input["influx_database"],
+                    username=user_input.get("influx_username"),
+                    password=user_input.get("influx_password"),
+                    ssl=user_input.get("influx_ssl", False)
+                ) as migrator:
+                    await self.hass.async_add_executor_job(migrator.test_connection)
+                
+                return await self.async_step_cleanup_select()
+            except Exception as e:
+                _LOGGER.error("InfluxDB connection test failed: %s", e)
+                errors["base"] = "influx_conn_error"
+
+        schema = vol.Schema(
+            {
+                vol.Required("influx_host", default="localhost"): str,
+                vol.Required("influx_port", default=8086): int,
+                vol.Required("influx_database", default="homeassistant"): str,
+                vol.Optional("influx_username"): str,
+                vol.Optional("influx_password"): str,
+                vol.Optional("influx_ssl", default=False): selector.BooleanSelector(),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_influxdb", data_schema=schema, errors=errors
+        )
+
+    async def async_step_cleanup_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select InfluxDB cleanup strategy."""
+        errors = {}
+
+        if user_input is not None:
+            strategy = user_input["strategy"]
+            self.context["cleanup_strategy"] = strategy
+            
+            # Fetch candidates list
+            influx_config = self.context.get("influx_config") or {}
+            candidates = await discover_cleanup_candidates(self.hass, influx_config, strategy)
+            
+            if not candidates:
+                errors["base"] = "no_cleanup_candidates"
+            else:
+                self.context["cleanup_candidates"] = candidates
+                return await self.async_step_cleanup_confirm()
+
+        schema = vol.Schema(
+            {
+                vol.Required("strategy", default="yaml"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value="yaml", label="Option 1: Exclude-Liste aus configuration.yaml auslesen"
+                            ),
+                            selector.SelectOptionDict(
+                                value="migrated", label="Option 2: Bereits migrierte Quell-Entitaeten loeschen"
+                            ),
+                            selector.SelectOptionDict(
+                                value="orphaned", label="Option 3: Verwaiste InfluxDB-Entitaeten (nicht in HA vorhanden)"
+                            ),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_select", data_schema=schema, errors=errors
+        )
+
+    async def async_step_cleanup_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm candidate entities to delete."""
+        errors = {}
+        candidates = self.context.get("cleanup_candidates", [])
+
+        if user_input is not None:
+            selected_entities = user_input.get("entities_to_delete", [])
+            if not selected_entities:
+                errors["base"] = "no_entities_selected"
+            else:
+                influx_config = self.context.get("influx_config") or {}
+                run_cleanup_in_background(self.hass, selected_entities, influx_config)
+                
+                self.context["summary_text"] = (
+                    "**Bereinigung im Hintergrund gestartet!**\n\n"
+                    f"Das Loeschen von {len(selected_entities)} Entitaeten wurde im Hintergrund gestartet.\n"
+                    "Sobald der Vorgang abgeschlossen ist, erhaeltst du eine Systembenachrichtigung (Glocken-Symbol)."
+                )
+                return self.async_create_entry(
+                    title="InfluxDB Cleanup",
+                    data={"mappings": [], "cutoff_date": None, "delete_old": False, "influx_config": influx_config}
+                )
+
+        schema = vol.Schema(
+            {
+                vol.Required("entities_to_delete", default=candidates): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=c, label=c) for c in candidates
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                        multiple=True,
+                    )
+                )
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_confirm", data_schema=schema, errors=errors
+        )
 
     async def async_step_device(
         self, user_input: dict[str, Any] | None = None
@@ -1245,9 +1540,44 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options."""
+        if user_input is not None:
+            if user_input["options_mode"] == "cleanup":
+                self.context["cleanup_mode"] = True
+                influx_config = self.config_entry.data.get("influx_config")
+                if influx_config and influx_config.get("host"):
+                    return await self.async_step_cleanup_select()
+                else:
+                    return await self.async_step_cleanup_influxdb()
+            else:
+                return await self.async_step_migrate_influx_config()
+
+        schema = vol.Schema(
+            {
+                vol.Required("options_mode", default="migrate"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value="migrate", label="InfluxDB-Migration wiederholen / anpassen"
+                            ),
+                            selector.SelectOptionDict(
+                                value="cleanup", label="InfluxDB-Datenbank bereinigen (Cleanup)"
+                            ),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init", data_schema=schema
+        )
+
+    async def async_step_migrate_influx_config(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle InfluxDB v1 configuration inputs for migration."""
         errors = {}
-        
-        # Get existing mappings and config from entry data
         entry_data = self.config_entry.data
         mappings = entry_data.get("mappings", [])
         cutoff_date = entry_data.get("cutoff_date")
@@ -1265,7 +1595,6 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
             }
 
             try:
-                # Test connection
                 from .influx_migrator import InfluxV1Migrator
                 with InfluxV1Migrator(
                     host=new_influx_config["host"],
@@ -1277,24 +1606,20 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
                 ) as migrator:
                     await self.hass.async_add_executor_job(migrator.test_connection)
 
-                # Run InfluxDB migration again (in the background)
                 run_migration_in_background(
                     self.hass,
                     mappings,
                     cutoff_date,
                     delete_old,
                     new_influx_config,
-                    True, # influxdb_only = True
+                    True,
                 )
                 
-                # Store new influx config in context to save at the end of the flow
                 self.context["new_influx_config"] = new_influx_config
-
-                # Show results in a form
                 self.context["summary_text"] = (
                     "**Migration im Hintergrund gestartet!**\n\n"
                     "Die Migration wurde asynchron im Hintergrund gestartet, um Timeouts zu verhindern.\n"
-                    "Home Assistant benachrichtigt dich über das Glocken-Symbol unten links, sobald der Vorgang abgeschlossen ist."
+                    "Home Assistant benachrichtigt dich ueber das Glocken-Symbol unten links, sobald der Vorgang abgeschlossen ist."
                 )
                 return await self.async_step_summary_options()
             except Exception as e:
@@ -1313,7 +1638,142 @@ class EntityMigratorOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         return self.async_show_form(
-            step_id="init", data_schema=schema, errors=errors
+            step_id="migrate_influx_config", data_schema=schema, errors=errors
+        )
+
+    async def async_step_cleanup_influxdb(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle InfluxDB configuration inputs for database cleanup in options flow."""
+        errors = {}
+        influx_config = self.config_entry.data.get("influx_config") or {}
+
+        if user_input is not None:
+            new_influx_config = {
+                "host": user_input["influx_host"],
+                "port": user_input["influx_port"],
+                "database": user_input["influx_database"],
+                "username": user_input.get("influx_username"),
+                "password": user_input.get("influx_password"),
+                "ssl": user_input.get("influx_ssl", False),
+            }
+
+            try:
+                from .influx_migrator import InfluxV1Migrator
+                with InfluxV1Migrator(
+                    host=new_influx_config["host"],
+                    port=new_influx_config["port"],
+                    database=new_influx_config["database"],
+                    username=new_influx_config.get("username"),
+                    password=new_influx_config.get("password"),
+                    ssl=new_influx_config.get("ssl", False),
+                ) as migrator:
+                    await self.hass.async_add_executor_job(migrator.test_connection)
+                
+                self.context["new_influx_config"] = new_influx_config
+                return await self.async_step_cleanup_select()
+            except Exception as e:
+                _LOGGER.error("InfluxDB connection test failed: %s", e)
+                errors["base"] = "influx_conn_error"
+
+        schema = vol.Schema(
+            {
+                vol.Required("influx_host", default=influx_config.get("host", "localhost")): str,
+                vol.Required("influx_port", default=influx_config.get("port", 8086)): int,
+                vol.Required("influx_database", default=influx_config.get("database", "homeassistant")): str,
+                vol.Optional("influx_username", default=influx_config.get("username", "")): str,
+                vol.Optional("influx_password", default=influx_config.get("password", "")): str,
+                vol.Optional("influx_ssl", default=influx_config.get("ssl", False)): selector.BooleanSelector(),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_influxdb", data_schema=schema, errors=errors
+        )
+
+    async def async_step_cleanup_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select InfluxDB cleanup strategy in options flow."""
+        errors = {}
+
+        if user_input is not None:
+            strategy = user_input["strategy"]
+            self.context["cleanup_strategy"] = strategy
+            
+            # Fetch candidates list
+            influx_config = self.context.get("new_influx_config") or self.config_entry.data.get("influx_config") or {}
+            candidates = await discover_cleanup_candidates(self.hass, influx_config, strategy)
+            
+            if not candidates:
+                errors["base"] = "no_cleanup_candidates"
+            else:
+                self.context["cleanup_candidates"] = candidates
+                return await self.async_step_cleanup_confirm()
+
+        schema = vol.Schema(
+            {
+                vol.Required("strategy", default="yaml"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value="yaml", label="Option 1: Exclude-Liste aus configuration.yaml auslesen"
+                            ),
+                            selector.SelectOptionDict(
+                                value="migrated", label="Option 2: Bereits migrierte Quell-Entitaeten loeschen"
+                            ),
+                            selector.SelectOptionDict(
+                                value="orphaned", label="Option 3: Verwaiste InfluxDB-Entitaeten (nicht in HA vorhanden)"
+                            ),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_select", data_schema=schema, errors=errors
+        )
+
+    async def async_step_cleanup_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm candidate entities to delete in options flow."""
+        errors = {}
+        candidates = self.context.get("cleanup_candidates", [])
+
+        if user_input is not None:
+            selected_entities = user_input.get("entities_to_delete", [])
+            if not selected_entities:
+                errors["base"] = "no_entities_selected"
+            else:
+                influx_config = self.context.get("new_influx_config") or self.config_entry.data.get("influx_config") or {}
+                run_cleanup_in_background(self.hass, selected_entities, influx_config)
+                
+                self.context["summary_text"] = (
+                    "**Bereinigung im Hintergrund gestartet!**\n\n"
+                    f"Das Loeschen von {len(selected_entities)} Entitaeten wurde im Hintergrund gestartet.\n"
+                    "Sobald der Vorgang abgeschlossen ist, erhaeltst du eine Systembenachrichtigung (Glocken-Symbol)."
+                )
+                return await self.async_step_summary_options()
+
+        schema = vol.Schema(
+            {
+                vol.Required("entities_to_delete", default=candidates): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=c, label=c) for c in candidates
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                        multiple=True,
+                    )
+                )
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cleanup_confirm", data_schema=schema, errors=errors
         )
 
     async def async_step_summary_options(

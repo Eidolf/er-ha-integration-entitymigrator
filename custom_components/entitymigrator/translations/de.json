@@ -54,6 +54,32 @@
           "influx_password": "Passwort (optional)",
           "influx_ssl": "SSL-Verschlüsselung verwenden"
         }
+      },
+      "cleanup_influxdb": {
+        "title": "InfluxDB-Konfiguration (Bereinigung)",
+        "description": "Gib die Verbindungsdaten für deine InfluxDB v1 ein, um die Datenbank nach verwaisten oder ausgeschlossenen Daten zu scannen.",
+        "data": {
+          "influx_host": "Host / IP-Adresse",
+          "influx_port": "Port",
+          "influx_database": "Datenbank-Name",
+          "influx_username": "Benutzername (optional)",
+          "influx_password": "Passwort (optional)",
+          "influx_ssl": "SSL-Verschlüsselung verwenden"
+        }
+      },
+      "cleanup_select": {
+        "title": "Bereinigungs-Optionen",
+        "description": "Wähle aus, nach welcher Bereinigungs-Strategie die InfluxDB gescannt werden soll.",
+        "data": {
+          "strategy": "Bereinigungs-Strategie"
+        }
+      },
+      "cleanup_confirm": {
+        "title": "Entitäten zum Löschen auswählen",
+        "description": "Wähle aus der Liste der gefundenen InfluxDB-Entitäten diejenigen aus, deren historische Daten du unwiderruflich aus InfluxDB löschen möchtest.",
+        "data": {
+          "entities_to_delete": "Entitäten löschen"
+        }
       }
     },
     "error": {
@@ -63,7 +89,9 @@
       "no_device_entities": "Keine Entitäten für dieses Gerät gefunden.",
       "unit_mismatch": "Die physikalischen Einheiten der Entitäten stimmen nicht überein. Bitte stelle sicher, dass beide dieselbe Einheit haben (z. B. Wh oder kWh).",
       "not_confirmed": "Du musst die Sicherheits-Bestätigung aktivieren, um fortzufahren.",
-      "influx_conn_error": "Verbindung zu InfluxDB fehlgeschlagen. Bitte überprüfe Host, Port und Zugangsdaten."
+      "influx_conn_error": "Verbindung zu InfluxDB fehlgeschlagen. Bitte überprüfe Host, Port und Zugangsdaten.",
+      "no_cleanup_candidates": "Keine Entitäten für diese Bereinigungsoption in InfluxDB gefunden.",
+      "no_entities_selected": "Du musst mindestens eine Entität zum Löschen auswählen."
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"

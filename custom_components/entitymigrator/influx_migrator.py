@@ -81,6 +81,33 @@ class InfluxV1Migrator:
             _LOGGER.error("InfluxDB write failed: %s", err_msg)
             raise ValueError(err_msg) from e
 
+    def get_all_entity_ids(self):
+        """Get all unique entity_id tag values from InfluxDB."""
+        try:
+            res = self.query('SHOW TAG VALUES WITH KEY = "entity_id"')
+            entity_ids = set()
+            results = res.get("results", [])
+            if results and "series" in results[0]:
+                for val in results[0]["series"][0].get("values", []):
+                    if val:
+                        entity_ids.add(val[0])
+            return entity_ids
+        except Exception as e:
+            _LOGGER.error("Could not fetch entity_ids from InfluxDB: %s", e)
+            return set()
+
+    def delete_entity_series(self, entity_id):
+        """Delete all series/measurements belonging to an entity."""
+        try:
+            self.query(f"DROP SERIES WHERE \"entity_id\" = '{entity_id}'")
+        except Exception as e:
+            _LOGGER.warning("DROP SERIES failed for %s: %s", entity_id, e)
+            
+        try:
+            self.query(f'DROP MEASUREMENT "{entity_id}"')
+        except Exception:
+            pass
+
     def discover_series_and_counts(self, old_entity):
         """Find measurements containing the entity and count total data points."""
         series_info = []
