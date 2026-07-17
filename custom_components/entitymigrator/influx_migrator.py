@@ -51,6 +51,7 @@ class InfluxV1Migrator:
 
     def query(self, q, timeout=30):
         """Execute an InfluxQL query."""
+        import requests
         url = f"{self.base_url}/query"
         params = {"db": self.database, "q": q}
         resp = None
@@ -58,6 +59,9 @@ class InfluxV1Migrator:
             resp = self.session.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
+        except requests.exceptions.Timeout as e:
+            _LOGGER.warning("InfluxDB query timed out (Query: %s). The operation will continue in the background on the InfluxDB server.", q)
+            raise e
         except Exception as e:
             err_msg = str(e)
             if resp is not None and resp.text:
@@ -116,14 +120,25 @@ class InfluxV1Migrator:
         where_parts = [f"\"entity_id\" = '{name}'" for name in sorted(list(names_to_drop))]
         where_clause = " OR ".join(where_parts)
         
+        import requests
         try:
             self.query(f"DROP SERIES WHERE {where_clause}", timeout=600)
+        except requests.exceptions.Timeout:
+            _LOGGER.warning(
+                "[InfluxDB Cleanup] Der Loeschbefehl (DROP SERIES) hat das Zeitlimit ueberschritten. "
+                "InfluxDB verarbeitet das Loeschen im Hintergrund weiter. Dies ist bei grossen Datenmengen normal."
+            )
         except Exception as e:
             _LOGGER.warning("Batch DROP SERIES failed: %s", e)
             
         for name in sorted(list(names_to_drop)):
             try:
                 self.query(f'DROP MEASUREMENT "{name}"', timeout=30)
+            except requests.exceptions.Timeout:
+                _LOGGER.warning(
+                    "[InfluxDB Cleanup] DROP MEASUREMENT fuer %s hat das Zeitlimit ueberschritten. "
+                    "Wird im InfluxDB-Hintergrund fortgesetzt.", name
+                )
             except Exception:
                 pass
 
