@@ -104,13 +104,13 @@ class InfluxV1Migrator:
         
         for name in {entity_id, obj_id}:
             try:
-                self.query(f"DROP SERIES WHERE \"entity_id\" = '{name}'")
+                self.query(f"DROP SERIES WHERE \"entity_id\" = '{name}'", timeout=300)
             except Exception as e:
                 _LOGGER.warning("DROP SERIES failed for tag entity_id='%s': %s", name, e)
             
         for name in {entity_id, obj_id}:
             try:
-                self.query(f'DROP MEASUREMENT "{name}"')
+                self.query(f'DROP MEASUREMENT "{name}"', timeout=300)
             except Exception:
                 pass
 

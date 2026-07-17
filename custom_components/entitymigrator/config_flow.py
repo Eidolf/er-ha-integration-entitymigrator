@@ -227,10 +227,14 @@ def run_cleanup_in_background(hass: HomeAssistant, entities_to_delete: list[str]
         else:
             message = f"Die Bereinigung von {success_count} Entitaeten in InfluxDB wurde erfolgreich abgeschlossen!"
             
-        hass.components.persistent_notification.create(
-            message,
-            title=title,
-            notification_id="influxdb_cleanup_result"
+        hass.services.call(
+            "persistent_notification",
+            "create",
+            {
+                "title": title,
+                "message": message,
+                "notification_id": "influxdb_cleanup_result"
+            }
         )
         
     hass.async_add_executor_job(_execute)
