@@ -119,15 +119,18 @@ class InfluxV1Migrator:
             
         where_parts = [f"\"entity_id\" = '{name}'" for name in sorted(list(names_to_drop))]
         where_clause = " OR ".join(where_parts)
+        drop_query = f"DROP SERIES WHERE {where_clause}"
         
         import requests
         try:
-            self.query(f"DROP SERIES WHERE {where_clause}", timeout=600)
+            self.query(drop_query, timeout=600)
+            _LOGGER.info("[InfluxDB Cleanup] DROP SERIES erfolgreich beendet.")
         except requests.exceptions.Timeout:
             _LOGGER.warning(
                 "[InfluxDB Cleanup] Der Loeschbefehl (DROP SERIES) hat das Zeitlimit ueberschritten. "
-                "InfluxDB verarbeitet das Loeschen im Hintergrund weiter. Dies ist bei grossen Datenmengen normal."
+                "Ueberwache den Hintergrund-Vorgang in InfluxDB..."
             )
+            self.wait_for_query_completion(drop_query)
         except Exception as e:
             _LOGGER.warning("Batch DROP SERIES failed: %s", e)
             
@@ -141,6 +144,42 @@ class InfluxV1Migrator:
                 )
             except Exception:
                 pass
+
+    def wait_for_query_completion(self, query_substring, check_interval=15, max_wait=1800):
+        """Wait for a running query containing the substring to finish in InfluxDB."""
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait:
+            try:
+                res = self.query("SHOW QUERIES", timeout=10)
+                results = res.get("results", [])
+                is_running = False
+                if results and "series" in results[0]:
+                    series = results[0]["series"][0]
+                    columns = series.get("columns", [])
+                    q_idx = columns.index("query") if "query" in columns else 1
+                    for val in series.get("values", []):
+                        if len(val) > q_idx:
+                            active_query = val[q_idx]
+                            if "DROP SERIES" in active_query and "entity_id" in active_query:
+                                is_running = True
+                                duration = val[columns.index("duration")] if "duration" in columns else "unknown"
+                                _LOGGER.warning(
+                                    "[InfluxDB Cleanup] Loeschvorgang laeuft weiterhin in InfluxDB (Dauer: %s)...", 
+                                    duration
+                                )
+                                break
+                if not is_running:
+                    _LOGGER.info("[InfluxDB Cleanup] Loeschvorgang in InfluxDB wurde erfolgreich abgeschlossen.")
+                    return True
+            except Exception as e:
+                _LOGGER.debug("Could not fetch SHOW QUERIES: %s", e)
+                
+            time.sleep(check_interval)
+            
+        _LOGGER.warning("[InfluxDB Cleanup] Ueberwachung beendet, da das maximale Zeitlimit von 30 Minuten erreicht wurde.")
+        return False
 
     def check_entity_exists(self, entity_id):
         """Check if any series or measurement exists for the given entity ID."""
