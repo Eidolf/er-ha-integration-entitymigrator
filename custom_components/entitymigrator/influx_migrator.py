@@ -100,17 +100,30 @@ class InfluxV1Migrator:
 
     def delete_entity_series(self, entity_id):
         """Delete all series/measurements belonging to an entity."""
-        obj_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
-        
-        for name in {entity_id, obj_id}:
-            try:
-                self.query(f"DROP SERIES WHERE \"entity_id\" = '{name}'", timeout=300)
-            except Exception as e:
-                _LOGGER.warning("DROP SERIES failed for tag entity_id='%s': %s", name, e)
+        self.delete_entities_batch([entity_id])
+
+    def delete_entities_batch(self, entities):
+        """Delete all series belonging to a batch of entities in a single heavy query."""
+        if not entities:
+            return
             
-        for name in {entity_id, obj_id}:
+        names_to_drop = set()
+        for ent in entities:
+            names_to_drop.add(ent)
+            obj_id = ent.split(".", 1)[1] if "." in ent else ent
+            names_to_drop.add(obj_id)
+            
+        where_parts = [f"\"entity_id\" = '{name}'" for name in sorted(list(names_to_drop))]
+        where_clause = " OR ".join(where_parts)
+        
+        try:
+            self.query(f"DROP SERIES WHERE {where_clause}", timeout=600)
+        except Exception as e:
+            _LOGGER.warning("Batch DROP SERIES failed: %s", e)
+            
+        for name in sorted(list(names_to_drop)):
             try:
-                self.query(f'DROP MEASUREMENT "{name}"', timeout=300)
+                self.query(f'DROP MEASUREMENT "{name}"', timeout=30)
             except Exception:
                 pass
 

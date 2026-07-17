@@ -227,13 +227,8 @@ def run_cleanup_in_background(hass: HomeAssistant, entities_to_delete: list[str]
                 password=influx_config.get("password"),
                 ssl=influx_config.get("ssl", False)
             ) as migrator:
-                for entity in entities_to_delete:
-                    try:
-                        migrator.delete_entity_series(entity)
-                        success_count += 1
-                    except Exception as e:
-                        errors.append(f"{entity}: {e}")
-                        _LOGGER.error("Fehler beim Loeschen von %s: %s", entity, traceback.format_exc())
+                migrator.delete_entities_batch(entities_to_delete)
+                success_count = len(entities_to_delete)
         except Exception as e:
             errors.append(f"Verbindungsfehler: {e}")
             
