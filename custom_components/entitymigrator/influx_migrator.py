@@ -145,7 +145,7 @@ class InfluxV1Migrator:
             except Exception:
                 pass
 
-    def wait_for_query_completion(self, query_substring, check_interval=15, max_wait=1800):
+    def wait_for_query_completion(self, query_substring, check_interval=60, max_wait=1800):
         """Wait for a running query containing the substring to finish in InfluxDB."""
         import time
         start_time = time.time()
