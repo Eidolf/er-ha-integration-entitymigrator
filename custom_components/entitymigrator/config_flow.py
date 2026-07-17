@@ -37,7 +37,7 @@ def load_influxdb_excludes(hass: HomeAssistant) -> tuple[list[str], list[str]]:
     """Load entities and entity_globs excluded from InfluxDB configuration.yaml."""
     import os
     import re
-    from homeassistant.util.yaml import load_yaml
+    import yaml
     
     entities = []
     entity_globs = []
@@ -46,14 +46,34 @@ def load_influxdb_excludes(hass: HomeAssistant) -> tuple[list[str], list[str]]:
     if not os.path.exists(yaml_path):
         return entities, entity_globs
         
+    class SafeLoaderIgnoreSecrets(yaml.SafeLoader):
+        """YAML SafeLoader that treats !secret tag as dummy string to prevent parser failures."""
+        pass
+
+    def secret_constructor(loader, node):
+        return f"__secret_{node.value}"
+
+    SafeLoaderIgnoreSecrets.add_constructor("!secret", secret_constructor)
+    # Also ignore other HA tags just in case
+    for tag in ["!include", "!include_dir_list", "!include_dir_named", "!include_dir_merge_list", "!include_dir_merge_named", "!env_var"]:
+        SafeLoaderIgnoreSecrets.add_constructor(tag, lambda loader, node: f"__{tag.strip('!')}_{node.value}")
+
     try:
-        config = load_yaml(yaml_path) or {}
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config = yaml.load(f, Loader=SafeLoaderIgnoreSecrets) or {}
+            
         influx_conf = config.get("influxdb", {})
-        if not influx_conf and "influxdb" in config:
-            pass
-        exclude_conf = influx_conf.get("exclude", {})
-        entities = exclude_conf.get("entities", [])
-        entity_globs = exclude_conf.get("entity_globs", [])
+        if isinstance(influx_conf, list):
+            for item in influx_conf:
+                if isinstance(item, dict):
+                    exclude_conf = item.get("exclude", {})
+                    entities.extend(exclude_conf.get("entities", []))
+                    entity_globs.extend(exclude_conf.get("entity_globs", []))
+        elif isinstance(influx_conf, dict):
+            exclude_conf = influx_conf.get("exclude", {})
+            entities.extend(exclude_conf.get("entities", []))
+            entity_globs.extend(exclude_conf.get("entity_globs", []))
+            
     except Exception as e:
         _LOGGER.error("Failed to parse configuration.yaml for InfluxDB excludes: %s", e)
         try:
